@@ -105,14 +105,105 @@ static int deserialize_header(const uint8_t* buf, size_t len, size_t* off, Shell
  * LinkTargetIDList deserialization
  */
 static int deserialize_idlist(const uint8_t* buf, size_t len, size_t* off, LinkTargetIDList* pidl){
-    // ill do this
+    uint16_t idlist_size;
+    TRY(read_u16(buf, len, off, &idlist_size));
+    pidl->total_size = idlist_size;
+    
+    size_t end = *off + idlist_size;
+    pidl->item_count = 0;
+
+    while(*off + 2 <= end){
+        uint16_t cb;
+        TRY(read_u16(buf, len, off, &cb));
+
+        if(cb == 0){
+            pidl->has_terminal = 1;
+            break;
+        }
+
+        if(cb < 2) return -1;
+
+        uint16_t payload_len = cb - 2; // cb includes itself so - 2
+
+        if(pidl->item_count >= MAX_PIDL_ITEMS) return -1;
+        ItemID* item = &pidl->items[pidl->item_count];
+        item->size = cb;
+        item->payload_len = (payload_len > 0) ? payload_len - 1 : 0;
+
+        // raw copy of the entire SHITEMID (fallback mutation for unknown class types)
+        item->raw_len = cb;
+        item->raw = malloc(cb);
+        if(!item->raw) return -1;
+        // go back 2 bytes to capture cb of raw
+        if(*off - 2 + cb > len) return -1;
+        memcpy(item->raw, buf + *off - 2, cb);
+
+        // class type is first byte of payload (abID[0])
+        if(payload_len > 0){
+            TRY(read_u8(buf, len, off, &item->class_type));
+
+            // remaining payload (follows format defined by class_type)
+            if(item->payload_len > 0){
+                item->payload = malloc(item->payload_len);
+                if(!item->payload) return -1;
+                TRY(read_bytes(buf, len, off, item->payload, item->payload_len));
+            }
+        }
+
+        // class type logics
+        switch(item->class_type){
+            case 0x1F: item->type = IDTYPE_CLSID_ITEM;       break;
+            case 0x2F: item->type = IDTYPE_VOLUME_ITEM;      break;
+            case 0x31: item->type = IDTYPE_FILESYSTEM_DIR;   break;
+            case 0x32: item->type = IDTYPE_FILESYSTEM_FILE;  break;
+            case 0x41: item->type = IDTYPE_NETWORK_RESOURCE; break;
+            case 0x42: item->type = IDTYPE_NETWORK_SERVER;   break;
+            case 0x46: item->type = IDTYPE_NETWORK_SHARE;    break;
+            default: item->type = IDTYPE_UNKNOWN; break;
+            // There also exist two signature-based class types:
+            //  . delegate items
+            //  . extension items
+            // These cannot be classified from abID[0] alone.
+            // TODO: optionally implement later
+        }
+
+        pidl->item_count++;
+    }
+
+    return 0;
 }
 
 /**
  * LinkInfo deserialization
  */
 static int deserialize_linkinfo(const uint8_t* buf, size_t len, size_t* off, LinkInfoState* info){
-    // ill do this
+    TRY(read_u32(buf, len, off, &info->link_info_size));
+    TRY(read_u32(buf, len, off, &info->link_info_header_size));
+
+    // LinkInfoFlags:
+    //  . bit0 VolumeIDAndLocalBasePath
+    //  . bit1 CommonNetworkRelativeLinkAndPathSuffix
+    TRY(read_u32(buf, len, off, &info->link_info_flags));
+    if(info->link_info_flags & 0x01){
+        info->has_volume_id = 1;
+        info->has_local_base_path = 1;
+    }
+    if(info->link_info_flags & 0x02){
+        info->has_common_network_relative_link = 1;
+    }
+
+    // offsets
+    TRY(read_u32(buf, len, off, &info->volume_id_offset));
+    TRY(read_u32(buf, len, off, &info->local_base_path_offset));
+    TRY(read_u32(buf, len, off, &info->common_network_relative_link_offset));
+    TRY(read_u32(buf, len, off, &info->common_path_suffix_offset));
+
+    // unicode fields only present if LinkInfoHeaderSize >= 0x24
+    if(info->link_info_header_size >= 0x24){
+        TRY(read_u32(buf, len, off, &info->local_base_path_offset_unicode));
+        TRY(read_u32(buf, len, off, &info->common_path_suffix_offset_unicode));
+    }
+
 }
 
 /**
