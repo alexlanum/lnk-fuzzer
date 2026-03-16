@@ -1,0 +1,6 @@
+.cache/
+test
+mutator.so
+harness
+*.dSYM/
+compile_commands.json
