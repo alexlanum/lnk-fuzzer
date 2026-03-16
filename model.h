@@ -130,6 +130,34 @@ typedef struct {
 } VolumeID;
 
 typedef enum {
+    // SDK values (wnnc.h / winnetwk.h) not listed in MS-SHLLINK spec
+    WNNC_NET_MSNET       = 0x00010000,
+    WNNC_NET_SMB         = 0x00020000, // aka WNNC_NET_LANMAN
+    WNNC_NET_NETWARE     = 0x00030000,
+    WNNC_NET_VINES       = 0x00040000,
+    WNNC_NET_10NET       = 0x00050000,
+    WNNC_NET_LOCUS       = 0x00060000,
+    WNNC_NET_SUN_PC_NFS  = 0x00070000,
+    WNNC_NET_LANSTEP     = 0x00080000,
+    WNNC_NET_9TILES      = 0x00090000,
+    WNNC_NET_LANTASTIC   = 0x000A0000,
+    WNNC_NET_AS400       = 0x000B0000,
+    WNNC_NET_FTP_NFS     = 0x000C0000,
+    WNNC_NET_PATHWORKS   = 0x000D0000,
+    WNNC_NET_LIFENET     = 0x000E0000,
+    WNNC_NET_POWERLAN    = 0x000F0000,
+    WNNC_NET_BWNFS       = 0x00100000,
+    WNNC_NET_COGENT      = 0x00110000,
+    WNNC_NET_FARALLON    = 0x00120000,
+    WNNC_NET_APPLETALK   = 0x00130000,
+    WNNC_NET_INTERGRAPH  = 0x00140000,
+    WNNC_NET_SYMFONET    = 0x00150000,
+    WNNC_NET_CLEARCASE   = 0x00160000,
+    WNNC_NET_FRONTIER    = 0x00170000,
+    WNNC_NET_BMC         = 0x00180000,
+    WNNC_NET_DCE         = 0x00190000,
+
+    // MS-SHLLINK spec valid values (0x001A0000 – 0x00430000)
     WNNC_NET_AVID        = 0x001A0000,
     WNNC_NET_DOCUSPACE   = 0x001B0000,
     WNNC_NET_MANGOSOFT   = 0x001C0000,
@@ -514,11 +542,12 @@ typedef struct {
  * corresponds to one instance of this model.
  */
 typedef struct {
-    LNKLayout       core;
-    ShellLinkHeader header;
-    LinkInfoState   linkinfo;
-    StringDataState stringdata;
-    ExtraDataState  extradata;
+    LNKLayout        core;
+    ShellLinkHeader  header;
+    LinkTargetIDList linktargetidlist;
+    LinkInfoState    linkinfo;
+    StringDataState  stringdata;
+    ExtraDataState   extradata;
 } LNKGeneratorState;
 
 #endif
