@@ -59,7 +59,7 @@ typedef enum {
     MUTATE_PIDL_INSERT_ITEM,
     MUTATE_PIDL_REMOVE_ITEM,
     MUTATE_PIDL_DUPLICATE_ITEM,
-    MUTATE_PIDL_PARENT_CHILD_MISMATCH,
+    MUTATE_PIDL_PARENT_CHILD_MISMATCH,  // item parent/child type relationships
     MUTATE_PIDL_CHAIN_TRUNCATION,
     MUTATE_PIDL_TOTAL_SIZE_DESYNC,      // IDListSize field inconsistent with actual items
     MUTATE_PIDL_CLASS_TYPE,             // change abID[0] dispatch byte
@@ -135,13 +135,11 @@ typedef enum {
     MUTATE_KNOWNFOLDER_OFFSET_OOB,              // offset past end of IDList
 
     // File
-    MUTATE_FILE_HEADER_SIZE_WRONG,              // != 0x4C
-    MUTATE_FILE_CLSID_CORRUPT,                  // corrupt shell link CLSID
     MUTATE_FILE_TRUNCATE,
     MUTATE_FILE_APPEND_GARBAGE,
     MUTATE_FILE_SECTION_OVERLAP,                // sections overlap in byte layout
 
-    MUTATE_COUNT // must be last
+    MUTATE_COUNT,                               // must be last
 } MutationOperator;
 
 /**

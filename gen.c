@@ -2,9 +2,6 @@
  * Populates a LNKGeneratorState with valid data and returns it.
  * Each gen_x function populates on section of the format.
  * The generate_x functions compose them into complete configs.
- *
- * Each field's validation is reverse engineered to guide
- * how much mutation effort to spend on it.
  */
 #include "model.h"
 #include <string.h>
@@ -56,7 +53,6 @@
 #define FA_ENCRYPTED                  0x00004000
 
 // ShellLinkHeader ShowCommand values
-// "any other value MUST be treated as SW_SHOWNORMAL"
 #define SW_SHOWNORMAL                 0x00000001
 #define SW_SHOWMAXIMIZED              0x00000003
 #define SW_SHOWMINNOACTIVE            0x00000007
