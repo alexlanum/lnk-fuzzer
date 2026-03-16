@@ -5,7 +5,7 @@
 #include <wchar.h>
 
 /**
- * ShellLinkHeader non-constant fields only
+ * ShellLinkHeader non-constant fields
  */
 typedef struct {
     uint32_t link_flags;
@@ -539,7 +539,7 @@ typedef struct {
  * Structured model used to generate and serialize an LNK file.
  * This represents the configuration for all major LNK structures that
  * shall exist when constructing a single input. Each corpus entry
- * corresponds to one instance of this model.
+ * corresponds to one LNKGeneratorState instance.
  */
 typedef struct {
     LNKLayout        core;
