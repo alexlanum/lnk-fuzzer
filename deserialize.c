@@ -208,20 +208,56 @@ static int deserialize_linkinfo(const uint8_t* buf, size_t len, size_t* off, Lin
 
     // variable
     if(info->has_volume_id){
+        if(info->volume_id_offset & 3) return -1; // VolumeIDOffset must be 4-byte aligned
         size_t volume_id_offset = linkinfo_start + info->volume_id_offset;
-        // parse VolumeID starting at volume_id_offset
-        TRY(read_u32(buf, len, &volume_id_offset, &info->volume_id.volume_id_size));
-        size_t remaining = (linkinfo_start + info->link_info_size) - volume_id_offset;
+        size_t volume_id_start = volume_id_offset;
+
+        TRY(read_u32(buf, len, &volume_id_offset, &info->volume_id.volume_id_size)); // VolumeIDSize
+        size_t remaining = (linkinfo_start + info->link_info_size) - volume_id_start;
         if(info->volume_id.volume_id_size > remaining || info->volume_id.volume_id_size < 0x10) return -1;
 
+        TRY(read_u32(buf, len, &volume_id_offset, (uint32_t*)&info->volume_id.drive_type)); // DriveType
+
+        TRY(read_u32(buf, len, &volume_id_offset, &info->volume_id.drive_serial_number));   // SerialNumber
+
+        TRY(read_u32(buf, len, &volume_id_offset, &info->volume_id.volume_label_offset));   // VolumeLabelOffset
+        if(info->volume_id.volume_label_offset == 0x14){
+            info->volume_id.has_label_unicode = 1;
+            if(info->volume_id.volume_id_size < 0x14) return -1;
+            TRY(read_u32(buf, len, &volume_id_offset, &info->volume_id.volume_label_offset_unicode));
+            if(info->volume_id.volume_label_offset_unicode & 1) return -1; // Unicode offsets must be 2-byte aligned
+        }
+        
+        // read volume label string
+        if(info->volume_id.has_label_unicode){
+            // unicode
+            size_t label_offset = volume_id_start + info->volume_id.volume_label_offset_unicode;
+            if(label_offset >= volume_id_start + info->volume_id.volume_id_size) return -1;
+            size_t bytemax = volume_id_start + info->volume_id.volume_id_size - label_offset;
+            if(bytemax > sizeof(info->volume_id.data_unicode)){
+                bytemax = sizeof(info->volume_id.data_unicode);
+            }
+            memcpy(info->volume_id.data_unicode, buf + label_offset, bytemax);
+        } else{
+            // ansi
+            size_t label_offset = volume_id_start + info->volume_id.volume_label_offset;
+            if(label_offset >= volume_id_start + info->volume_id.volume_id_size) return -1;
+            size_t bytemax = volume_id_start + info->volume_id.volume_id_size - label_offset;
+            if(bytemax > sizeof(info->volume_id.data_ansi)){
+                bytemax = sizeof(info->volume_id.data_ansi);
+            }
+            memcpy(info->volume_id.data_ansi, buf + label_offset, bytemax);
+        }
     }
 
     if(info->has_local_base_path){
         size_t lbp_off = linkinfo_start + info->local_base_path_offset;
         // read null-terminated ANSI string at lbp_off
+        // null-terminated string at linkinfo_start + local_base_path_offset
     }
 
     if(info->has_common_network_relative_link){
+        // CommonNetworkRelativeLinkOffset must be 4-byte aligned
         size_t cnrl_off = linkinfo_start + info->common_network_relative_link_offset;
         // parse CNRL starting at cnrl_off
     }
