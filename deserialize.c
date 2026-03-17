@@ -253,20 +253,150 @@ static int deserialize_linkinfo(const uint8_t* buf, size_t len, size_t* off, Lin
     if(info->has_local_base_path){
         size_t lbp_offset = linkinfo_start + info->local_base_path_offset;
         size_t max_bytes = linkinfo_start + info->link_info_size - lbp_offset;
+        if(max_bytes > sizeof(info->local_base_path)){
+            max_bytes = sizeof(info->local_base_path);
+        }
+        
         // LocalBasePath string must be null-terminated within bounds
+        void* nullpos = memchr(buf + lbp_offset, '\0', max_bytes);
+        if(!nullpos) return -1;
 
-        if ( !find_null((char*)LinkInfo + LocalBasePathOffset, LinkInfoSize - LocalBasePathOffset) )
-            return 0;
-        // read null-terminated ANSI string at lbp_off
-        // null-terminated string at linkinfo_start + local_base_path_offset
+        // read null-terminated ANSI string at lbp_offset
+        memcpy(info->local_base_path, buf + lbp_offset, max_bytes);
     }
 
+    // If extended header (>= 0x24) and VolumeIDAndLocalBasePath:
+    //  . LocalBasePathUnicode present
+    //  . CommonPathSuffixUnicode present
+    if(info->link_info_header_size >= 0x24 && info->has_volume_id){
+        // both must be < LinkInfoSize
+        if(info->local_base_path_offset_unicode >= info->link_info_size) return -1;
+        if(info->common_path_suffix_offset_unicode >= info->link_info_size) return -1;
+
+        // both must be 2-byte aligned
+        if(info->local_base_path_offset_unicode & 1) return -1;
+        if(info->common_path_suffix_offset_unicode & 1) return -1;
+
+        // read both unicode strings (both must pass StringCbLengthW)
+        size_t max_bytes;
+        // LocalBasePathUnicode
+        size_t lbp_uni_offset = linkinfo_start + info->local_base_path_offset_unicode;
+        max_bytes = linkinfo_start + info->link_info_size - lbp_uni_offset;
+
+        if(max_bytes > sizeof(info->local_base_path_unicode))
+            max_bytes = sizeof(info->local_base_path_unicode);
+
+        if(!memchr(buf + lbp_uni_offset, '\0', max_bytes)) return -1;
+        memcpy(info->local_base_path_unicode, buf + lbp_uni_offset, max_bytes);
+
+        info->has_local_base_path_unicode = 1; // set flag after successful read
+
+        // CommonPathSuffixUnicode
+        size_t cps_uni_offset = linkinfo_start + info->common_path_suffix_offset_unicode;
+        max_bytes = linkinfo_start + info->link_info_size - cps_uni_offset;
+
+        if(max_bytes > sizeof(info->common_path_suffix_unicode))
+            max_bytes = sizeof(info->common_path_suffix_unicode);
+        
+        if(!memchr(buf + cps_uni_offset, '\0', max_bytes)) return -1;
+        memcpy(info->common_path_suffix_unicode, buf + cps_uni_offset, max_bytes);
+        
+        info->has_common_path_suffix_unicode = 1; // set flag after successful read
+    }
+
+    // If extended header (>= 0x24) and CommonNetworkRelativeLink:
+    //  . CommonPathSuffixUnicode present
+    if(info->link_info_header_size >= 0x24 && info->has_common_network_relative_link){
+        // must be < LinkInfoSize, 2-byte aligned, string must pass StringCbLengthW
+        if(info->common_path_suffix_offset_unicode >= info->link_info_size) return -1;
+        if(info->common_path_suffix_offset_unicode & 1) return -1;
+        
+        size_t cps_uni_offset = linkinfo_start + info->common_path_suffix_offset_unicode;
+        size_t max_bytes = linkinfo_start + info->link_info_size - cps_uni_offset;
+
+        if(max_bytes > sizeof(info->common_path_suffix_unicode))
+            max_bytes = sizeof(info->common_path_suffix_unicode);
+        
+        if(!memchr(buf + cps_uni_offset, '\0', max_bytes)) return -1;
+        memcpy(info->common_path_suffix_unicode, buf + cps_uni_offset, max_bytes);
+        
+        info->has_common_path_suffix_unicode = 1; // set flag after successful read
+    }
+    
     if(info->has_common_network_relative_link){
-        // CommonNetworkRelativeLinkOffset must be 4-byte aligned
-        size_t cnrl_off = linkinfo_start + info->common_network_relative_link_offset;
-        // parse CNRL starting at cnrl_off
-    }
+        if(info->common_network_relative_link_offset & 3) return -1; // CommonNetworkRelativeLinkOffset must be 4-byte aligned
+        size_t cnrl_offset = linkinfo_start + info->common_network_relative_link_offset;
+        size_t cnrl_start = cnrl_offset;
+        CommonNetworkRelativeLink* cnrl = &info->common_network_relative_link;
 
+        TRY(read_u32(buf, len, &cnrl_offset, &cnrl->common_network_relative_link_size));  // CommonNetworkRelativeLinkSize
+        if(cnrl->common_network_relative_link_size < 0x14) return -1;
+
+        TRY(read_u32(buf, len, &cnrl_offset, &cnrl->common_network_relative_link_flags)); // CommonNetworkRelativeLinkFlags
+        if(cnrl->common_network_relative_link_flags & 0x01){
+            cnrl->has_device_name = 1; // bit0 set: HasDeviceName
+        }
+        
+        if(cnrl->common_network_relative_link_flags & 0x02){
+            // bit1 set: ValidNetType
+            // so network_provider_type is meaningful
+            // no extra field to read, just means the value you already read is valid
+        }
+        
+        // offsets
+        TRY(read_u32(buf, len, &cnrl_offset, &cnrl->net_name_offset));                    // NetNameOffset (always present)
+        TRY(read_u32(buf, len, &cnrl_offset, &cnrl->device_name_offset));                 // DeviceNameOffset
+        // DeviceNameOffset must be 0 if ValidDevice not set
+        if(!cnrl->has_device_name && cnrl->device_name_offset != 0) return -1;
+
+        TRY(read_u32(buf, len, &cnrl_offset, (uint32_t*)&cnrl->network_provider_type));   // NetworkProviderType
+        // NetworkProviderType must be 0 if ValidNetType not set
+        if(!(cnrl->common_network_relative_link_flags & 0x02) && cnrl->network_provider_type != 0) return -1;
+
+        if(cnrl->common_network_relative_link_size >= 0x22){
+            cnrl->has_unicode_fields = 1;
+            TRY(read_u32(buf, len, &cnrl_offset, &cnrl->net_name_offset_unicode));        // NetNameOffsetUnicode
+            TRY(read_u32(buf, len, &cnrl_offset, &cnrl->device_name_offset_unicode));     // DeviceNameOffsetUnicode
+        }
+
+        // variable strings
+        if(cnrl->has_unicode_fields){
+            // NetNameUnicode
+            size_t nn_uni_off = cnrl_start + cnrl->net_name_offset_unicode;
+            size_t max_bytes = cnrl_start + cnrl->common_network_relative_link_size - nn_uni_off;
+            if(max_bytes > sizeof(cnrl->net_name_unicode)) max_bytes = sizeof(cnrl->net_name_unicode);
+            if(!memchr(buf + nn_uni_off, '\0', max_bytes)) return -1;
+            memcpy(cnrl->net_name_unicode, buf + nn_uni_off, max_bytes);
+            cnrl->has_net_name_unicode = 1;
+
+            // DeviceNameUnicode
+            if(cnrl->has_device_name){
+                size_t dn_uni_off = cnrl_start + cnrl->device_name_offset_unicode;
+                max_bytes = cnrl_start + cnrl->common_network_relative_link_size - dn_uni_off;
+                if(max_bytes > sizeof(cnrl->device_name_unicode)) max_bytes = sizeof(cnrl->device_name_unicode);
+                if(!memchr(buf + dn_uni_off, '\0', max_bytes)) return -1;
+                memcpy(cnrl->device_name_unicode, buf + dn_uni_off, max_bytes);
+                cnrl->has_device_name_unicode = 1;
+            }
+        } else{
+            // NetName (ANSI, always present)
+            size_t nn_off = cnrl_start + cnrl->net_name_offset;
+            size_t max_bytes = cnrl_start + cnrl->common_network_relative_link_size - nn_off;
+            if(max_bytes > sizeof(cnrl->net_name)) max_bytes = sizeof(cnrl->net_name);
+            if(!memchr(buf + nn_off, '\0', max_bytes)) return -1;
+            memcpy(cnrl->net_name, buf + nn_off, max_bytes);
+
+            // DeviceName (ANSI, only if ValidDevice)
+            if(cnrl->has_device_name){
+                size_t dn_off = cnrl_start + cnrl->device_name_offset;
+                max_bytes = cnrl_start + cnrl->common_network_relative_link_size - dn_off;
+                if(max_bytes > sizeof(cnrl->device_name)) max_bytes = sizeof(cnrl->device_name);
+                if(!memchr(buf + dn_off, '\0', max_bytes)) return -1;
+                memcpy(cnrl->device_name, buf + dn_off, max_bytes);
+            }
+        }
+
+    }
 
 }
 
