@@ -347,6 +347,8 @@ Offset  Size  Field
 
 
 
+The spec defines bit 0 as `VolumeIDAndLocalBasePath`. It is one flag controlling both fields together. If `VolumeID` is present, `LocalBasePath` is present. If not, neither is. They always come as a pair.
+
 A link target is either local (`VolumeID` path) or on a remote network (`CommonNetworkRelativeLink` path). The spec allows both flags to be set simultaneously, which is itself a fuzz target, as the parser may not handle that well.
 
 

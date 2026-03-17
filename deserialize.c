@@ -233,25 +233,30 @@ static int deserialize_linkinfo(const uint8_t* buf, size_t len, size_t* off, Lin
             // unicode
             size_t label_offset = volume_id_start + info->volume_id.volume_label_offset_unicode;
             if(label_offset >= volume_id_start + info->volume_id.volume_id_size) return -1;
-            size_t bytemax = volume_id_start + info->volume_id.volume_id_size - label_offset;
-            if(bytemax > sizeof(info->volume_id.data_unicode)){
-                bytemax = sizeof(info->volume_id.data_unicode);
+            size_t max_bytes = volume_id_start + info->volume_id.volume_id_size - label_offset;
+            if(max_bytes > sizeof(info->volume_id.data_unicode)){
+                max_bytes = sizeof(info->volume_id.data_unicode);
             }
-            memcpy(info->volume_id.data_unicode, buf + label_offset, bytemax);
+            memcpy(info->volume_id.data_unicode, buf + label_offset, max_bytes);
         } else{
             // ansi
             size_t label_offset = volume_id_start + info->volume_id.volume_label_offset;
             if(label_offset >= volume_id_start + info->volume_id.volume_id_size) return -1;
-            size_t bytemax = volume_id_start + info->volume_id.volume_id_size - label_offset;
-            if(bytemax > sizeof(info->volume_id.data_ansi)){
-                bytemax = sizeof(info->volume_id.data_ansi);
+            size_t max_bytes = volume_id_start + info->volume_id.volume_id_size - label_offset;
+            if(max_bytes > sizeof(info->volume_id.data_ansi)){
+                max_bytes = sizeof(info->volume_id.data_ansi);
             }
-            memcpy(info->volume_id.data_ansi, buf + label_offset, bytemax);
+            memcpy(info->volume_id.data_ansi, buf + label_offset, max_bytes);
         }
     }
 
     if(info->has_local_base_path){
-        size_t lbp_off = linkinfo_start + info->local_base_path_offset;
+        size_t lbp_offset = linkinfo_start + info->local_base_path_offset;
+        size_t max_bytes = linkinfo_start + info->link_info_size - lbp_offset;
+        // LocalBasePath string must be null-terminated within bounds
+
+        if ( !find_null((char*)LinkInfo + LocalBasePathOffset, LinkInfoSize - LocalBasePathOffset) )
+            return 0;
         // read null-terminated ANSI string at lbp_off
         // null-terminated string at linkinfo_start + local_base_path_offset
     }
