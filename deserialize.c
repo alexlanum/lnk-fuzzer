@@ -177,6 +177,8 @@ static int deserialize_idlist(const uint8_t* buf, size_t len, size_t* off, LinkT
  * LinkInfo deserialization
  */
 static int deserialize_linkinfo(const uint8_t* buf, size_t len, size_t* off, LinkInfoState* info){
+    size_t linkinfo_start = *off;
+
     TRY(read_u32(buf, len, off, &info->link_info_size));
     TRY(read_u32(buf, len, off, &info->link_info_header_size));
 
@@ -203,6 +205,27 @@ static int deserialize_linkinfo(const uint8_t* buf, size_t len, size_t* off, Lin
         TRY(read_u32(buf, len, off, &info->local_base_path_offset_unicode));
         TRY(read_u32(buf, len, off, &info->common_path_suffix_offset_unicode));
     }
+
+    // variable
+    if(info->has_volume_id){
+        size_t volume_id_offset = linkinfo_start + info->volume_id_offset;
+        // parse VolumeID starting at volume_id_offset
+        TRY(read_u32(buf, len, &volume_id_offset, &info->volume_id.volume_id_size));
+        size_t remaining = (linkinfo_start + info->link_info_size) - volume_id_offset;
+        if(info->volume_id.volume_id_size > remaining || info->volume_id.volume_id_size < 0x10) return -1;
+
+    }
+
+    if(info->has_local_base_path){
+        size_t lbp_off = linkinfo_start + info->local_base_path_offset;
+        // read null-terminated ANSI string at lbp_off
+    }
+
+    if(info->has_common_network_relative_link){
+        size_t cnrl_off = linkinfo_start + info->common_network_relative_link_offset;
+        // parse CNRL starting at cnrl_off
+    }
+
 
 }
 
