@@ -265,6 +265,14 @@ static int deserialize_linkinfo(const uint8_t* buf, size_t len, size_t* off, Lin
         memcpy(info->local_base_path, buf + lbp_offset, max_bytes);
     }
 
+    // CommonPathSuffix (ANSI, always present)
+    size_t cps_offset = linkinfo_start + info->common_path_suffix_offset;
+    size_t max_bytes = linkinfo_start + info->link_info_size - cps_offset;
+    if(max_bytes > sizeof(info->common_path_suffix))
+        max_bytes = sizeof(info->common_path_suffix);
+    if(!memchr(buf + cps_offset, '\0', max_bytes)) return -1;
+    memcpy(info->common_path_suffix, buf + cps_offset, max_bytes);
+
     // If extended header (>= 0x24) and VolumeIDAndLocalBasePath:
     //  . LocalBasePathUnicode present
     //  . CommonPathSuffixUnicode present
@@ -397,7 +405,8 @@ static int deserialize_linkinfo(const uint8_t* buf, size_t len, size_t* off, Lin
         }
 
     }
-
+    *off = linkinfo_start + info->link_info_size;
+    return 0;
 }
 
 /**
