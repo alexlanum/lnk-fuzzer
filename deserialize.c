@@ -65,7 +65,6 @@ static const uint8_t LNK_CLSID[16] = {0x01, 0x14, 0x02, 0x00, 0x00, 0x00, 0x00, 
 #define LF_HAS_WORKING_DIR        0x00000010
 #define LF_HAS_ARGUMENTS          0x00000020
 #define LF_HAS_ICON_LOCATION      0x00000040
-#define LF_IS_UNICODE             0x00000080
 
 /**
  * ShellLinkHeader deserialization
@@ -435,17 +434,56 @@ static int read_string_field(const uint8_t* buf, size_t len, size_t* off, char**
 
     return 0;
 }
+
 static int deserialize_stringdata(const uint8_t* buf, size_t len, size_t* off, StringDataState* stringdata, uint32_t link_flags){
     // IsUnicode (bit 7) selects between W and A read paths. No validation.
     // Arguments field has no max length cap (a3 = 0). Overlong mutations go here.
-    // Other fields capped at 260.
+    // Other fields capped at 260 by the target.
+    // Order is always: Name, RelativePath, WorkingDir, Arguments, IconLocation.
+    int is_unicode = 0;
+    if(link_flags & 0x80) is_unicode = 1;
+    
+    if(link_flags & LF_HAS_NAME){
+        stringdata->has_name = 1;
+        TRY(read_string_field(buf, len, off, &stringdata->name, &stringdata->name_len, is_unicode));
+    }
+    if(link_flags & LF_HAS_RELATIVE_PATH){
+        stringdata->has_relative_path = 1;
+        TRY(read_string_field(buf, len, off, &stringdata->relative_path, &stringdata->rel_len, is_unicode));
+    }
+    if(link_flags & LF_HAS_WORKING_DIR){
+        stringdata->has_working_dir = 1;
+        TRY(read_string_field(buf, len, off, &stringdata->working_dir, &stringdata->work_len, is_unicode));
+    }
+    if(link_flags & LF_HAS_ARGUMENTS){
+        stringdata->has_arguments = 1;
+        TRY(read_string_field(buf, len, off, &stringdata->arguments, &stringdata->arg_len, is_unicode));
+    }
+    if(link_flags & LF_HAS_ICON_LOCATION){
+        stringdata->has_icon_location = 1;
+        TRY(read_string_field(buf, len, off, &stringdata->icon_location, &stringdata->icon_len, is_unicode));
+    }
+
+    return 0;
 }
 
 /**
  * ExtraData deserialization
  */
 static int deserialize_extradata(const uint8_t* buf, size_t len, size_t* off, ExtraDataState* extradata, LNKLayout* layout){
-    // ill do this
+    // Internally done by SHReadDataBlockList
+    // Block size > 0xFFFF: seeks backward in stream, silently terminates loop.
+    // Block size < 8: terminates loop.
+    // Valid range [8, 0xFFFF] -> IsValidDataBlock -> SHAddDataBlock.
+    // IsValidDataBlock determines accepted signatures.
+
+    while(*off + 4 <= len){ // ensure there are enough bytes to read the next size field
+        uint32_t block_size;
+        TRY(read_u32(buf, len, off, &block_size));
+
+    }
+
+
 }
 
 /**
