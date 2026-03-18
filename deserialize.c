@@ -469,21 +469,74 @@ static int deserialize_stringdata(const uint8_t* buf, size_t len, size_t* off, S
 
 /**
  * ExtraData deserialization
+ * ExtraData block header:
+ *  . DWORD BlockSize;
+ *  . DWORD BlockSignature;
+ *  . BYTE Payload[BlockSize - 8]
  */
 static int deserialize_extradata(const uint8_t* buf, size_t len, size_t* off, ExtraDataState* extradata, LNKLayout* layout){
-    // Internally done by SHReadDataBlockList
-    // Block size > 0xFFFF: seeks backward in stream, silently terminates loop.
-    // Block size < 8: terminates loop.
-    // Valid range [8, 0xFFFF] -> IsValidDataBlock -> SHAddDataBlock.
-    // IsValidDataBlock determines accepted signatures.
-
-    while(*off + 4 <= len){ // ensure there are enough bytes to read the next size field
+    // Blocks are passed to SHReadDataBlockList, which selectively handles all block signatures and size parsing.
+    while(*off + 4 <= len){ // prevent reading past EOF
+        // DWORD BlockSize
         uint32_t block_size;
         TRY(read_u32(buf, len, off, &block_size));
+        if(block_size < 8) break; // terminator or invalid
+        if(extradata->block_count > MAX_EXTRA_DATA_BLOCKS) return -1; // invalid range
 
+        // DWORD BlockSignature
+        uint32_t block_signature;
+        TRY(read_u32(buf, len, off, &block_signature));
+
+        // BYTE Payload[BlockSize - 8]
+        uint32_t payload_len = block_size - 8; // minus size and signature
+        ExtraDataBlock* block = &extradata->blocks[extradata->block_count];
+        block->size = block_size;
+
+        // BlockSignature type classification
+        switch(block_signature){
+            case 0xA0000001: block->type = EXTRA_ENVIRONMENT;      break;
+            case 0xA0000002: block->type = EXTRA_CONSOLE;          break;
+            case 0xA0000004: block->type = EXTRA_CONSOLE_FE;       break;
+            case 0xA0000006: block->type = EXTRA_DARWIN;           break;
+            case 0xA0000007: block->type = EXTRA_ICON_ENVIRONMENT; break;
+            case 0xA000000B: block->type = EXTRA_KNOWN_FOLDER;     break;
+            case 0xA0000009: block->type = EXTRA_PROPERTY_STORE;   break;
+            case 0xA0000008: block->type = EXTRA_SHIM;             break;
+            case 0xA0000005: block->type = EXTRA_SPECIAL_FOLDER;   break;
+            case 0xA0000003: block->type = EXTRA_TRACKER;          break;
+            case 0xA000000C: block->type = EXTRA_VISTA_IDLIST;     break;
+            default:         block->type = EXTRA_TERMINATOR;       break;
+        }
+
+        // Store the raw payload which comes after BlockSignature
+        if(payload_len > 0){
+            block->data = malloc(payload_len);
+            if(!block->data) return -1;
+            TRY(read_bytes(buf, len, off, block->data, payload_len));
+        }
+
+        extradata->block_count++;
     }
 
+    // Set the specific layout flags for whatever the BlockSignature matched
+    // Only TrackerDataBlock, DarwinDataBlock, and VistaAndAboveIDListDataBlock
+    // are actively interpreted during _LoadFromStream.
+    // PropertyStoreDataBlock is lazily parsed upon first property access.
+    // All other blocks are stored but not interpreted during load (deserialization).
+    for(int i=0; i < extradata->block_count; i++){
+        switch(extradata->blocks[i].type){
+            case EXTRA_PROPERTY_STORE: layout->has_propstore_block   = 1; break;
+            case EXTRA_DARWIN:         layout->has_darwin_block      = 1; break;
+            case EXTRA_TRACKER:        layout->has_tracker_block     = 1; break;
+            case EXTRA_KNOWN_FOLDER:   layout->has_knownfolder_block = 1; break;
+            default: break;
+        }
+    }
 
+    if((extradata->block_count > 0))
+        layout->has_extradata = 1;
+
+    return 0;
 }
 
 /**
