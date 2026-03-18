@@ -212,7 +212,7 @@ static int deserialize_linkinfo(const uint8_t* buf, size_t len, size_t* off, Lin
         size_t volume_id_offset = linkinfo_start + info->volume_id_offset;
         size_t volume_id_start = volume_id_offset;
 
-        TRY(read_u32(buf, len, &volume_id_offset, &info->volume_id.volume_id_size)); // VolumeIDSize
+        TRY(read_u32(buf, len, &volume_id_offset, &info->volume_id.volume_id_size));        // VolumeIDSize
         size_t remaining = (linkinfo_start + info->link_info_size) - volume_id_start;
         if(info->volume_id.volume_id_size > remaining || info->volume_id.volume_id_size < 0x10) return -1;
 
@@ -270,6 +270,7 @@ static int deserialize_linkinfo(const uint8_t* buf, size_t len, size_t* off, Lin
     size_t max_bytes = linkinfo_start + info->link_info_size - cps_offset;
     if(max_bytes > sizeof(info->common_path_suffix))
         max_bytes = sizeof(info->common_path_suffix);
+    if(info->common_path_suffix_offset >= info->link_info_size) return -1;
     if(!memchr(buf + cps_offset, '\0', max_bytes)) return -1;
     memcpy(info->common_path_suffix, buf + cps_offset, max_bytes);
 
@@ -412,8 +413,32 @@ static int deserialize_linkinfo(const uint8_t* buf, size_t len, size_t* off, Lin
 /**
  * StringData deserialization
  */
+static int read_string_field(const uint8_t* buf, size_t len, size_t* off, char** out, uint16_t* out_len, int is_unicode){
+    uint16_t count;
+    TRY(read_u16(buf, len, off, &count));
+
+    size_t byte_len;
+    if(is_unicode)
+        byte_len = (size_t)count * 2;
+    else
+        byte_len = (size_t)count;
+
+    char* str = malloc(byte_len + 1);
+    if(!str) return -1;
+
+    TRY(read_bytes(buf, len, off, str, byte_len));
+
+    str[byte_len] = '\0';
+
+    *out = str;
+    *out_len = count;
+
+    return 0;
+}
 static int deserialize_stringdata(const uint8_t* buf, size_t len, size_t* off, StringDataState* stringdata, uint32_t link_flags){
-    // ill do this
+    // IsUnicode (bit 7) selects between W and A read paths. No validation.
+    // Arguments field has no max length cap (a3 = 0). Overlong mutations go here.
+    // Other fields capped at 260.
 }
 
 /**
