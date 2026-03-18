@@ -1542,3 +1542,11 @@ StringData deserialization:
 // Arguments field has no max length cap (a3 = 0). Overlong mutations go here.
 // Other fields capped at 260.
 ```
+
+
+### Final custom fuzzer architecture
+1. AFL++ gives raw bytes (seed)               → `mutator.c` (`afl_custom_fuzz` entry point)
+2. seed bytes are deserialized                → `deserialize.c`
+3. struct is mutated                          → `mutate.c` / `mutate.h`
+4. mutated struct is serialized back to bytes → `serialize.c`
+5. AFL++ feeds those bytes to the target      → `mutator.c` (return to AFL++)

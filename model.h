@@ -4,6 +4,13 @@
 #include <stdint.h>
 #include <wchar.h>
 
+static const uint8_t LNK_CLSID[16] = {
+    0x01, 0x14, 0x02, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0xC0, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x46
+};
+
 /**
  * ShellLinkHeader non-constant fields
  */
@@ -24,7 +31,7 @@ typedef struct {
     uint16_t reserved1;
     uint32_t reserved2;
     uint32_t reserved3;
-} ShellLinkHeader; // 0x4C real
+} ShellLinkHeader;
 
 /**
  * LinkTargetIDList

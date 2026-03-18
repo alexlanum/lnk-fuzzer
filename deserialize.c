@@ -56,7 +56,6 @@ static inline int read_bytes(const uint8_t* buf, size_t len, size_t* off, void* 
 /**
  * constants
  */
-static const uint8_t LNK_CLSID[16] = {0x01, 0x14, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46};
 #define HEADER_SIZE               0x4C
 #define LF_HAS_LINK_TARGET_IDLIST 0x00000001
 #define LF_HAS_LINK_INFO          0x00000002
@@ -104,44 +103,57 @@ static int deserialize_header(const uint8_t* buf, size_t len, size_t* off, Shell
  * LinkTargetIDList deserialization
  */
 static int deserialize_idlist(const uint8_t* buf, size_t len, size_t* off, LinkTargetIDList* pidl){
+    // IDListSize describes how many bytes the entire IDList payload
+    // occupies. This is used to know where the IDList ends.
     uint16_t idlist_size;
     TRY(read_u16(buf, len, off, &idlist_size));
     pidl->total_size = idlist_size;
     
+    // Walk boundary
+    // end is the position in buf where the IDList stops.
+    // Everything between *off and end is SHITEMID entries.
     size_t end = *off + idlist_size;
     pidl->item_count = 0;
 
-    while(*off + 2 <= end){
-        uint16_t cb;
-        TRY(read_u16(buf, len, off, &cb));
+    // SHITEMID read loop
+    while(*off + 2 <= end){ // make sure theres room to read 2 bytes
+        uint16_t cb; // SHITEMID.cb: total size of the item including cb itself
+        TRY(read_u16(buf, len, off, &cb)); // read cb
 
-        if(cb == 0){
+        if(cb == 0){ // cb of 0 means end of list (terminator)
             pidl->has_terminal = 1;
-            break;
+            break; // never increment item_count, terminator is not an item
         }
 
         if(cb < 2) return -1;
-
         uint16_t payload_len = cb - 2; // cb includes itself so - 2
 
+        // get a pointer to the current item in the array
         if(pidl->item_count >= MAX_PIDL_ITEMS) return -1;
         ItemID* item = &pidl->items[pidl->item_count];
         item->size = cb;
-        item->payload_len = (payload_len > 0) ? payload_len - 1 : 0;
+        if(payload_len > 0){
+            // payload_len is everything after cb
+            // payload_len - 1 is everything after the class type byte
+            item->payload_len = payload_len - 1; // - 1 because one byte of payload is the class type byte, which gets stored separately.
+        }
 
-        // raw copy of the entire SHITEMID (fallback mutation for unknown class types)
+        // copy the entire SHITEMID as it appeared in the input
+        // This raw copy serves two purposes: the serializer can write
+        // it back directly, and the mutator can mutate items it doesn't
+        // fully understand (IDTYPE_UNKNOWN) by operating on raw bytes.
         item->raw_len = cb;
         item->raw = malloc(cb);
         if(!item->raw) return -1;
-        // go back 2 bytes to capture cb of raw
+        // go back 2 bytes to where cb was, because u already read those
         if(*off - 2 + cb > len) return -1;
         memcpy(item->raw, buf + *off - 2, cb);
 
-        // class type is first byte of payload (abID[0])
+        // read the class type (first byte of payload)
         if(payload_len > 0){
-            TRY(read_u8(buf, len, off, &item->class_type));
+            TRY(read_u8(buf, len, off, &item->class_type)); // abID[0]
 
-            // remaining payload (follows format defined by class_type)
+            // read remaining payload (class_type specific format)
             if(item->payload_len > 0){
                 item->payload = malloc(item->payload_len);
                 if(!item->payload) return -1;
@@ -149,7 +161,9 @@ static int deserialize_idlist(const uint8_t* buf, size_t len, size_t* off, LinkT
             }
         }
 
-        // class type logics
+        // class type classification
+        // This maps the class type byte to the enum so the mutator knows
+        // which mutation strategies to apply to this item.
         switch(item->class_type){
             case 0x1F: item->type = IDTYPE_CLSID_ITEM;       break;
             case 0x2F: item->type = IDTYPE_VOLUME_ITEM;      break;
@@ -166,7 +180,7 @@ static int deserialize_idlist(const uint8_t* buf, size_t len, size_t* off, LinkT
             // TODO: optionally implement later
         }
 
-        pidl->item_count++;
+        pidl->item_count++; // move to next item, repeats until terminator or end of IDList
     }
 
     return 0;
