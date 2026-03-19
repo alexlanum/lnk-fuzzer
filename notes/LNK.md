@@ -1545,8 +1545,9 @@ StringData deserialization:
 
 
 ### Final custom fuzzer architecture
-1. AFL++ gives raw bytes (seed)               → `mutator.c` (`afl_custom_fuzz` entry point)
-2. seed bytes are deserialized                → `deserialize.c`
-3. struct is mutated                          → `mutate.c` / `mutate.h`
-4. mutated struct is serialized back to bytes → `serialize.c`
-5. AFL++ feeds those bytes to the target      → `mutator.c` (return to AFL++)
+1. AFL++ gives raw bytes (seed)                             → `mutator.c` (`afl_custom_fuzz` entry point)
+2. deserialize the seed bytes                               → `deserialize.c`
+3. mutate the struct with mutation operators                → `mutate.c` / `mutate.h`
+4. serialize the mutated struct back to bytes               → `serialize.c`
+5. AFL++ interface feeds those bytes to the harness         → `mutator.c` (return to AFL++)
+6. harness program is executed by AFL++ with mutated bytes  → `harness.c`
