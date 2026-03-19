@@ -282,5 +282,38 @@ static int serialize_extradata(const uint8_t* buf, size_t cap, size_t* off, cons
         TRY(write_u32(buf, cap, off, sig));
 
         // Payload[BlockSize - 8]
+        if(((block->size - 8) > 0) && block->data){
+            TRY(write_bytes(buf, cap, off, block->data, block->size - 8));
+        }
     }
+
+    // terminator ExtraDataBlock
+    TRY(write_u32(buf, cap, off, 0)); // when parser reads the next block and sees BlockSize < 8 it stops
+
+    return 0;
+}
+
+/**
+ * Core serialization
+ */
+int serialize_lnk(const uint8_t* buf, size_t cap, size_t* out_len, const LNKGeneratorState* state){
+    size_t offset = 0;
+
+    TRY(serialize_header(buf, cap, &offset, &state->header));
+    if(state->core.has_link_target_idlist)
+        TRY(serialize_idlist(buf, cap, &offset, &state->linktargetidlist));
+
+    if(state->core.has_linkinfo)
+        TRY(serialize_linkinfo(buf, cap, &offset, &state->linkinfo));
+
+    int is_unicode = (state->header.link_flags & 0x80) != 0;
+    if(state->core.has_stringdata)
+        TRY(serialize_stringdata(buf, cap, &offset, &state->stringdata, is_unicode));
+
+    if(state->core.has_extradata)
+        TRY(serialize_extradata(buf, cap, &offset, &state->extradata));
+
+    *out_len = offset;
+
+    return 0;
 }
