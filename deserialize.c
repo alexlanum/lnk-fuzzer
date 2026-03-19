@@ -376,7 +376,7 @@ static int deserialize_linkinfo(const uint8_t* buf, size_t len, size_t* off, Lin
         // NetworkProviderType must be 0 if ValidNetType not set
         if(!(cnrl->common_network_relative_link_flags & 0x02) && cnrl->network_provider_type != 0) return -1;
 
-        if(cnrl->common_network_relative_link_size >= 0x22){
+        if(cnrl->net_name_offset > 0x14){
             cnrl->has_unicode_fields = 1;
             TRY(read_u32(buf, len, &cnrl_offset, &cnrl->net_name_offset_unicode));        // NetNameOffsetUnicode
             TRY(read_u32(buf, len, &cnrl_offset, &cnrl->device_name_offset_unicode));     // DeviceNameOffsetUnicode

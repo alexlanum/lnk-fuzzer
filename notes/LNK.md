@@ -406,8 +406,8 @@ Offset  Size  Field
 ── variable data ─────────────────────────────────────────────────────
 ?       var   NetName         null-terminated ANSI — the UNC path
 ?       var   DeviceName      null-terminated ANSI — the mapped drive letter
-?       var   NetNameUnicode  null-terminated Unicode (if size >= 0x22)
-?       var   DeviceNameUnicode null-terminated Unicode (if size >= 0x22)
+?       var   NetNameUnicode  null-terminated Unicode
+?       var   DeviceNameUnicode null-terminated Unicode
 ```
 
 

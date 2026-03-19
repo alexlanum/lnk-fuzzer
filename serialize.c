@@ -53,6 +53,16 @@ static inline int write_bytes(uint8_t* buf, size_t cap, size_t* off, const void*
     return 0;
 }
 
+static size_t utf16le_bytelen(const void* data, size_t max_bytes){
+    const uint8_t* p = (const uint8_t*)data;
+    size_t i = 0;
+    while(i + 1 < max_bytes){
+        if(p[i] == 0 && p[i+1] == 0) break;
+        i += 2;
+    }
+    return i + 2;
+}
+
 /**
  * ShellLinkHeader serialization
  */
@@ -148,7 +158,7 @@ static int serialize_linkinfo(uint8_t* buf, size_t cap, size_t* off, const LinkI
             printf("  linkinfo: volumeid label unicode\n");
             TRY(write_u32(buf, cap, &volumeid_offset, linkinfo->volume_id.volume_label_offset_unicode));
             size_t data_offset = linkinfo_start + linkinfo->volume_id_offset + linkinfo->volume_id.volume_label_offset_unicode;
-            size_t data_len = wcslen(linkinfo->volume_id.data_unicode) * 2 + 2;
+            size_t data_len = utf16le_bytelen(linkinfo->volume_id.data_unicode, sizeof(linkinfo->volume_id.data_unicode));
             TRY(write_bytes(buf, cap, &data_offset, linkinfo->volume_id.data_unicode, data_len));
         } else{
             printf("  linkinfo: volumeid label ansi\n");
@@ -172,6 +182,7 @@ static int serialize_linkinfo(uint8_t* buf, size_t cap, size_t* off, const LinkI
         CommonNetworkRelativeLink const* cnrl = &linkinfo->common_network_relative_link;
 
         // constant header fields
+        printf("  linkinfo: common_network_relative_link\n");
         TRY(write_u32(buf, cap, &cnrl_offset, cnrl->common_network_relative_link_size));
         TRY(write_u32(buf, cap, &cnrl_offset, cnrl->common_network_relative_link_flags));
         TRY(write_u32(buf, cap, &cnrl_offset, cnrl->net_name_offset));
@@ -187,19 +198,22 @@ static int serialize_linkinfo(uint8_t* buf, size_t cap, size_t* off, const LinkI
         if(cnrl->has_unicode_fields){
             // NetNameUnicode (always present)
             size_t netname_offset = cnrl_start + cnrl->net_name_offset_unicode;
-            TRY(write_bytes(buf, cap, &netname_offset, cnrl->net_name_unicode, wcslen(cnrl->net_name_unicode) * 2 + 2));
-            // DeviceNameUnicode
+            printf("  \tnetname_unicode\n");
+            TRY(write_bytes(buf, cap, &netname_offset, cnrl->net_name_unicode, utf16le_bytelen(cnrl->net_name_unicode, sizeof(cnrl->net_name_unicode))));
             if(cnrl->has_device_name_unicode){
                 size_t devicename_offset = cnrl_start + cnrl->device_name_offset_unicode;
-                TRY(write_bytes(buf, cap, &devicename_offset, cnrl->device_name_unicode, wcslen(cnrl->device_name_unicode) * 2 + 2));
+                printf("  \tdevice_name_unicode\n");
+                TRY(write_bytes(buf, cap, &devicename_offset, cnrl->device_name_unicode, utf16le_bytelen(cnrl->device_name_unicode, sizeof(cnrl->device_name_unicode))));
             }
         } else{
             // NetName (always present)
             size_t netname_offset = cnrl_start + cnrl->net_name_offset;
+            printf("  \tnetname\n");
             TRY(write_bytes(buf, cap, &netname_offset, cnrl->net_name, strlen(cnrl->net_name) + 1));
             // DeviceName
             if(cnrl->has_device_name){
                 size_t devicename_offset = cnrl_start + cnrl->device_name_offset;
+                printf("  \tdevicename\n");
                 TRY(write_bytes(buf, cap, &devicename_offset, cnrl->device_name, strlen(cnrl->device_name) + 1));
             }
         }
@@ -213,13 +227,12 @@ static int serialize_linkinfo(uint8_t* buf, size_t cap, size_t* off, const LinkI
     // Unicode strings
     if(linkinfo->has_local_base_path_unicode){
         size_t lbp_uni = linkinfo_start + linkinfo->local_base_path_offset_unicode;
-        TRY(write_bytes(buf, cap, &lbp_uni, linkinfo->local_base_path_unicode, wcslen(linkinfo->local_base_path_unicode) * 2 + 2));
+        TRY(write_bytes(buf, cap, &lbp_uni, linkinfo->local_base_path_unicode, utf16le_bytelen(linkinfo->local_base_path_unicode, sizeof(linkinfo->local_base_path_unicode))));
     }
 
     if(linkinfo->has_common_path_suffix_unicode){
         size_t cps_uni = linkinfo_start + linkinfo->common_path_suffix_offset_unicode;
-        TRY(write_bytes(buf, cap, &cps_uni, linkinfo->common_path_suffix_unicode, wcslen(linkinfo->common_path_suffix_unicode) * 2 + 2));
-
+        TRY(write_bytes(buf, cap, &cps_uni, linkinfo->common_path_suffix_unicode, utf16le_bytelen(linkinfo->common_path_suffix_unicode, sizeof(linkinfo->common_path_suffix_unicode))));
     }
 
     // advance offset past entire LinkInfo so the next section (StringData or ExtraData) starts at the right pos
