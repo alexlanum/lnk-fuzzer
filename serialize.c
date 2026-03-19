@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <wchar.h>
+#include <stdio.h>
 
 #define TRY(expr) do { if ((expr) < 0) return -1; } while (0)
 
