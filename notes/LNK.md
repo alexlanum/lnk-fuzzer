@@ -392,8 +392,8 @@ Offset  Size  Field
                 bit 0 = ValidDevice. bit 1 = ValidNetType.
                 all other bits reserved/must be zero
 0x08    4     NetNameOffset
-                offset from structure start to NetName string
-                always present — no conditionality
+                offset, in bytes, from the start of the CommonNetworkRelativeLink structure to
+                the NetName string. Always present.
 0x0C    4     DeviceNameOffset
                 offset from structure start to DeviceName string
                 if ValidDevice not set, MUST be zero

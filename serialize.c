@@ -3,6 +3,7 @@
 #include "model.h"
 #include <string.h>
 #include <stdlib.h>
+#include <wchar.h>
 
 #define TRY(expr) do { if ((expr) < 0) return -1; } while (0)
 
@@ -97,6 +98,103 @@ static int serialize_idlist(uint8_t* buf, size_t cap, size_t* off, const LinkTar
     // - 2 because total_size defines how many bytes of IDList data follow after total_size itself. It doesn't count its own 2 bytes, so subtract your placeholder.
     uint16_t total_size = (uint16_t)(*off - size_off - 2);
     memcpy(buf + size_off, &total_size, 2);
+
+    return 0;
+}
+
+/**
+ * LinkInfo serialization
+ */
+static int serialize_linkinfo(uint8_t* buf, size_t cap, size_t* off, const LinkInfoState* linkinfo){
+    size_t linkinfo_start = *off; // where LinkInfo begins in the LNK file (buf)
+
+    // header
+    TRY(write_u32(buf, cap, off, linkinfo->link_info_size));
+    TRY(write_u32(buf, cap, off, linkinfo->link_info_header_size));
+    TRY(write_u32(buf, cap, off, linkinfo->link_info_flags));
+    TRY(write_u32(buf, cap, off, linkinfo->volume_id_offset));
+    TRY(write_u32(buf, cap, off, linkinfo->local_base_path_offset));
+    TRY(write_u32(buf, cap, off, linkinfo->common_network_relative_link_offset));
+    TRY(write_u32(buf, cap, off, linkinfo->common_path_suffix_offset));
+
+    if(linkinfo->link_info_header_size >= 0x24){
+        TRY(write_u32(buf, cap, off, linkinfo->local_base_path_offset_unicode));
+        TRY(write_u32(buf, cap, off, linkinfo->common_path_suffix_offset_unicode));
+    }
+
+    // variable data (written at offset positions relative to linkinfo_start)
+    // var   VolumeID                        . (if flag A set)
+    // var   LocalBasePath                   . (if flag A set, null-terminated ANSI)
+    // var   CommonNetworkRelativeLink       . (if flag B set)
+    // var   CommonPathSuffix                . (always present, null-terminated ANSI)
+    // var   LocalBasePathUnicode            . (if flag A set AND header >= 0x24)
+    // var   CommonPathSuffixUnicode         . (if header >= 0x24)
+
+    // VolumeID
+    if(linkinfo->has_volume_id){
+        size_t volumeid_offset = linkinfo_start + linkinfo->volume_id_offset;
+        TRY(write_u32(buf, cap, &volumeid_offset, linkinfo->volume_id.volume_id_size));
+        TRY(write_u32(buf, cap, &volumeid_offset, (uint32_t)linkinfo->volume_id.drive_type));
+        TRY(write_u32(buf, cap, &volumeid_offset, linkinfo->volume_id.drive_serial_number));
+        TRY(write_u32(buf, cap, &volumeid_offset, linkinfo->volume_id.volume_label_offset));
+    
+        if(linkinfo->volume_id.has_label_unicode){
+            TRY(write_u32(buf, cap, &volumeid_offset, linkinfo->volume_id.volume_label_offset_unicode));
+            size_t data_offset = linkinfo_start + linkinfo->volume_id_offset + linkinfo->volume_id.volume_label_offset_unicode;
+            size_t data_len = wcslen(linkinfo->volume_id.data_unicode) * 2 + 2;
+            TRY(write_bytes(buf, cap, &data_offset, linkinfo->volume_id.data_unicode, data_len));
+        } else{
+            size_t data_offset = linkinfo_start + linkinfo->volume_id_offset + linkinfo->volume_id.volume_label_offset;
+            size_t data_len = strlen(linkinfo->volume_id.data_ansi) + 1;
+            TRY(write_bytes(buf, cap, &data_offset, linkinfo->volume_id.data_ansi, data_len));
+        }
+    }
+
+    // LocalBasePath
+    if(linkinfo->has_local_base_path){
+        size_t lbp_offset = linkinfo_start + linkinfo->local_base_path_offset;
+        size_t lbp_len = strlen(linkinfo->local_base_path) + 1;
+        write_bytes(buf, cap, &lbp_offset, linkinfo->local_base_path, lbp_len);
+    }
+
+    // CommonNetworkRelativeLink
+    if(linkinfo->has_common_network_relative_link){
+        size_t cnrl_offset = linkinfo_start + linkinfo->common_network_relative_link_offset;
+        CommonNetworkRelativeLink* cnrl = (CommonNetworkRelativeLink*)&linkinfo->common_network_relative_link;
+        TRY(write_u32(buf, cap, &cnrl_offset, cnrl->common_network_relative_link_size));
+        TRY(write_u32(buf, cap, &cnrl_offset, cnrl->common_network_relative_link_flags));
+        TRY(write_u32(buf, cap, &cnrl_offset, cnrl->net_name_offset));
+        TRY(write_u32(buf, cap, &cnrl_offset, cnrl->device_name_offset));
+        TRY(write_u32(buf, cap, &cnrl_offset, (uint32_t)cnrl->network_provider_type));
+
+        if(cnrl->has_unicode_fields){
+            TRY(write_u32(buf, cap, &cnrl_offset, cnrl->net_name_offset_unicode));
+            TRY(write_u32(buf, cap, &cnrl_offset, cnrl->device_name_offset_unicode));
+        }
+
+        // variable
+        // ANSI strings
+        size_t netname_offset = linkinfo_start + linkinfo->common_network_relative_link_offset + cnrl->net_name_offset;
+        TRY(write_bytes(buf, cap, &netname_offset, cnrl->net_name, strlen(cnrl->net_name) + 1));
+
+        if(cnrl->has_device_name){
+            size_t devicename_offset = linkinfo_start + linkinfo->common_network_relative_link_offset + cnrl->device_name_offset;
+            TRY(write_bytes(buf, cap, &devicename_offset, cnrl->device_name, strlen(cnrl->device_name) + 1));
+        }
+
+        // Unicode strings
+        if(cnrl->has_unicode_fields){
+            size_t netname_uni = linkinfo_start + linkinfo->common_network_relative_link_offset + cnrl->net_name_offset_unicode;
+            TRY(write_bytes(buf, cap, &netname_uni, cnrl->net_name_unicode, wcslen(cnrl->net_name_unicode) * 2 + 2));
+
+            if(cnrl->has_device_name_unicode){
+                size_t devicename_uni = linkinfo_start + linkinfo->common_network_relative_link_offset + cnrl->device_name_offset_unicode;
+                write_bytes(buf, cap, &devicename_uni, cnrl->device_name_unicode, wcslen(cnrl->device_name_unicode) * 2 + 2);
+            }
+        }
+    }
+
+    // CommonPathSuffix (always present)
 
     return 0;
 }
