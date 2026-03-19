@@ -223,6 +223,64 @@ static int serialize_linkinfo(uint8_t* buf, size_t cap, size_t* off, const LinkI
 /**
  * StringData serialization
  */
-static int serialize_stringdata(uint8_t* buf, size_t cap, size_t* off, const StringDataState* stringdata, int is_unicode){
+static int write_string_field(uint8_t* buf, size_t cap, size_t* off, const char* str, uint16_t count, int is_unicode){
+    // StringData strings must not be null-terminated
+    TRY(write_u16(buf, cap, off, count));
 
+    size_t byte_len;
+    if(is_unicode)
+        byte_len = (size_t)count * 2;
+    else
+        byte_len = (size_t)count;
+    
+    TRY(write_bytes(buf, cap, off, str, byte_len));
+
+    return 0;
+}
+
+static int serialize_stringdata(uint8_t* buf, size_t cap, size_t* off, const StringDataState* stringdata, int is_unicode){
+    if(stringdata->has_name)
+        TRY(write_string_field(buf, cap, off, stringdata->name, stringdata->name_len, is_unicode));
+    if(stringdata->has_relative_path)
+        TRY(write_string_field(buf, cap, off, stringdata->relative_path, stringdata->rel_len, is_unicode));
+    if(stringdata->has_working_dir)
+        TRY(write_string_field(buf, cap, off, stringdata->working_dir, stringdata->work_len, is_unicode));
+    if(stringdata->has_icon_location)
+        TRY(write_string_field(buf, cap, off, stringdata->arguments, stringdata->arg_len, is_unicode));
+    if(stringdata->has_icon_location)
+        TRY(write_string_field(buf, cap, off, stringdata->icon_location, stringdata->icon_len, is_unicode));
+    
+    return 0;
+}
+
+/**
+ * ExtraData serialization
+ */
+static int serialize_extradata(const uint8_t* buf, size_t cap, size_t* off, const ExtraDataState* extradata){
+    for(int i=0; i < extradata->block_count; i++){
+        ExtraDataBlock const* block = &extradata->blocks[i];
+
+        // BlockSize
+        TRY(write_u32(buf, cap, off, block->size));
+
+        // BlockSignature
+        uint32_t sig;
+        switch(block->type){
+            case EXTRA_ENVIRONMENT:      sig = 0xA0000001; break;
+            case EXTRA_CONSOLE:          sig = 0xA0000002; break;
+            case EXTRA_TRACKER:          sig = 0xA0000003; break;
+            case EXTRA_CONSOLE_FE:       sig = 0xA0000004; break;
+            case EXTRA_SPECIAL_FOLDER:   sig = 0xA0000005; break;
+            case EXTRA_DARWIN:           sig = 0xA0000006; break;
+            case EXTRA_ICON_ENVIRONMENT: sig = 0xA0000007; break;
+            case EXTRA_SHIM:             sig = 0xA0000008; break;
+            case EXTRA_PROPERTY_STORE:   sig = 0xA0000009; break;
+            case EXTRA_KNOWN_FOLDER:     sig = 0xA000000B; break;
+            case EXTRA_VISTA_IDLIST:     sig = 0xA000000C; break;
+            default:                     sig = 0x00000000; break;
+        }
+        TRY(write_u32(buf, cap, off, sig));
+
+        // Payload[BlockSize - 8]
+    }
 }

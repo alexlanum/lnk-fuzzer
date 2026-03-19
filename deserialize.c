@@ -428,6 +428,7 @@ static int deserialize_linkinfo(const uint8_t* buf, size_t len, size_t* off, Lin
  * StringData deserialization
  */
 static int read_string_field(const uint8_t* buf, size_t len, size_t* off, char** out, uint16_t* out_len, int is_unicode){
+    // StringData strings must not be null-terminated
     uint16_t count;
     TRY(read_u16(buf, len, off, &count));
 
