@@ -168,45 +168,38 @@ static int serialize_linkinfo(uint8_t* buf, size_t cap, size_t* off, const LinkI
     // CommonNetworkRelativeLink
     if(linkinfo->has_common_network_relative_link){
         size_t cnrl_offset = linkinfo_start + linkinfo->common_network_relative_link_offset;
-        CommonNetworkRelativeLink* cnrl = (CommonNetworkRelativeLink*)&linkinfo->common_network_relative_link;
-        printf("  linkinfo: cnrl\n");
+        CommonNetworkRelativeLink const* cnrl = &linkinfo->common_network_relative_link;
+
+        // constant header fields
         TRY(write_u32(buf, cap, &cnrl_offset, cnrl->common_network_relative_link_size));
         TRY(write_u32(buf, cap, &cnrl_offset, cnrl->common_network_relative_link_flags));
         TRY(write_u32(buf, cap, &cnrl_offset, cnrl->net_name_offset));
         TRY(write_u32(buf, cap, &cnrl_offset, cnrl->device_name_offset));
         TRY(write_u32(buf, cap, &cnrl_offset, (uint32_t)cnrl->network_provider_type));
-
         if(cnrl->has_unicode_fields){
-            printf("  linkinfo: cnrl unicode\n");
             TRY(write_u32(buf, cap, &cnrl_offset, cnrl->net_name_offset_unicode));
             TRY(write_u32(buf, cap, &cnrl_offset, cnrl->device_name_offset_unicode));
         }
 
-        // variable
-        // ANSI strings
-        size_t netname_offset = linkinfo_start + linkinfo->common_network_relative_link_offset + cnrl->net_name_offset;
-        printf("  cnrl netname_off=%zu cap=%zu len=%zu\n",
-                linkinfo_start + linkinfo->common_network_relative_link_offset + cnrl->net_name_offset,
-                cap,
-                strlen(cnrl->net_name));
-        TRY(write_bytes(buf, cap, &netname_offset, cnrl->net_name, strlen(cnrl->net_name) + 1));
-
-        if(cnrl->has_device_name){
-            size_t devicename_offset = linkinfo_start + linkinfo->common_network_relative_link_offset + cnrl->device_name_offset;
-            TRY(write_bytes(buf, cap, &devicename_offset, cnrl->device_name, strlen(cnrl->device_name) + 1));
-        }
-
-        // Unicode strings
+        // variable strings (ANSI and unicode are mutually exclusive)
+        size_t cnrl_start = linkinfo_start + linkinfo->common_network_relative_link_offset;
         if(cnrl->has_unicode_fields){
-            size_t netname_uni = linkinfo_start + linkinfo->common_network_relative_link_offset + cnrl->net_name_offset_unicode;
-            printf("  cnrl nn_uni_off=%zu nn_uni_len=%zu\n",
-                linkinfo_start + linkinfo->common_network_relative_link_offset + cnrl->net_name_offset_unicode,
-                wcslen(cnrl->net_name_unicode) * 2 + 2);
-            TRY(write_bytes(buf, cap, &netname_uni, cnrl->net_name_unicode, wcslen(cnrl->net_name_unicode) * 2 + 2));
-
+            // NetNameUnicode (always present)
+            size_t netname_offset = cnrl_start + cnrl->net_name_offset_unicode;
+            TRY(write_bytes(buf, cap, &netname_offset, cnrl->net_name_unicode, wcslen(cnrl->net_name_unicode) * 2 + 2));
+            // DeviceNameUnicode
             if(cnrl->has_device_name_unicode){
-                size_t devicename_uni = linkinfo_start + linkinfo->common_network_relative_link_offset + cnrl->device_name_offset_unicode;
-                TRY(write_bytes(buf, cap, &devicename_uni, cnrl->device_name_unicode, wcslen(cnrl->device_name_unicode) * 2 + 2));
+                size_t devicename_offset = cnrl_start + cnrl->device_name_offset_unicode;
+                TRY(write_bytes(buf, cap, &devicename_offset, cnrl->device_name_unicode, wcslen(cnrl->device_name_unicode) * 2 + 2));
+            }
+        } else{
+            // NetName (always present)
+            size_t netname_offset = cnrl_start + cnrl->net_name_offset;
+            TRY(write_bytes(buf, cap, &netname_offset, cnrl->net_name, strlen(cnrl->net_name) + 1));
+            // DeviceName
+            if(cnrl->has_device_name){
+                size_t devicename_offset = cnrl_start + cnrl->device_name_offset;
+                TRY(write_bytes(buf, cap, &devicename_offset, cnrl->device_name, strlen(cnrl->device_name) + 1));
             }
         }
     }
