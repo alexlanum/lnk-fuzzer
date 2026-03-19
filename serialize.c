@@ -245,7 +245,7 @@ static int serialize_stringdata(uint8_t* buf, size_t cap, size_t* off, const Str
         TRY(write_string_field(buf, cap, off, stringdata->relative_path, stringdata->rel_len, is_unicode));
     if(stringdata->has_working_dir)
         TRY(write_string_field(buf, cap, off, stringdata->working_dir, stringdata->work_len, is_unicode));
-    if(stringdata->has_icon_location)
+    if(stringdata->has_arguments)
         TRY(write_string_field(buf, cap, off, stringdata->arguments, stringdata->arg_len, is_unicode));
     if(stringdata->has_icon_location)
         TRY(write_string_field(buf, cap, off, stringdata->icon_location, stringdata->icon_len, is_unicode));
@@ -256,7 +256,7 @@ static int serialize_stringdata(uint8_t* buf, size_t cap, size_t* off, const Str
 /**
  * ExtraData serialization
  */
-static int serialize_extradata(const uint8_t* buf, size_t cap, size_t* off, const ExtraDataState* extradata){
+static int serialize_extradata(uint8_t* buf, size_t cap, size_t* off, const ExtraDataState* extradata){
     for(int i=0; i < extradata->block_count; i++){
         ExtraDataBlock const* block = &extradata->blocks[i];
 
@@ -296,7 +296,7 @@ static int serialize_extradata(const uint8_t* buf, size_t cap, size_t* off, cons
 /**
  * Core serialization
  */
-int serialize_lnk(const uint8_t* buf, size_t cap, size_t* out_len, const LNKGeneratorState* state){
+int serialize_lnk(uint8_t* buf, size_t cap, size_t* out_len, const LNKGeneratorState* state){
     size_t offset = 0;
 
     TRY(serialize_header(buf, cap, &offset, &state->header));
