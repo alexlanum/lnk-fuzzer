@@ -104,6 +104,10 @@ static int serialize_idlist(uint8_t* buf, size_t cap, size_t* off, const LinkTar
 
 /**
  * LinkInfo serialization
+ * @param buf       Output byte buffer to write serialized data into (raw bytes that become the LNK file)
+ * @param cap       Capacity of buf in bytes, writes beyond this are rejected
+ * @param off       Current write position, advanced by the safe write functions as bytes are written
+ * @param linkinfo  Source struct to serialize, not modified
  */
 static int serialize_linkinfo(uint8_t* buf, size_t cap, size_t* off, const LinkInfoState* linkinfo){
     size_t linkinfo_start = *off; // where LinkInfo begins in the LNK file (buf)
@@ -194,7 +198,31 @@ static int serialize_linkinfo(uint8_t* buf, size_t cap, size_t* off, const LinkI
         }
     }
 
-    // CommonPathSuffix (always present)
+    // CommonPathSuffix (always present, ANSI string)
+    size_t cps_offset = linkinfo_start + linkinfo->common_path_suffix_offset;
+    TRY(write_bytes(buf, cap, &cps_offset, linkinfo->common_path_suffix, strlen(linkinfo->common_path_suffix) + 1));
+
+    // Unicode strings
+    if(linkinfo->has_local_base_path_unicode){
+        size_t lbp_uni = linkinfo_start + linkinfo->local_base_path_offset_unicode;
+        TRY(write_bytes(buf, cap, &lbp_uni, linkinfo->local_base_path_unicode, wcslen(linkinfo->local_base_path_unicode) * 2 + 2));
+    }
+
+    if(linkinfo->has_common_path_suffix_unicode){
+        size_t cps_uni = linkinfo_start + linkinfo->common_path_suffix_offset_unicode;
+        TRY(write_bytes(buf, cap, &cps_uni, linkinfo->common_path_suffix_unicode, wcslen(linkinfo->common_path_suffix_unicode) * 2 + 2));
+
+    }
+
+    // advance offset past entire LinkInfo so the next section (StringData or ExtraData) starts at the right pos
+    *off = linkinfo_start + linkinfo->link_info_size;
 
     return 0;
+}
+
+/**
+ * StringData serialization
+ */
+static int serialize_stringdata(uint8_t* buf, size_t cap, size_t* off, const StringDataState* stringdata, int is_unicode){
+
 }

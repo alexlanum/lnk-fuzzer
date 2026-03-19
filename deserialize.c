@@ -193,6 +193,7 @@ static int deserialize_linkinfo(const uint8_t* buf, size_t len, size_t* off, Lin
     size_t linkinfo_start = *off;
 
     TRY(read_u32(buf, len, off, &info->link_info_size));
+    if(info->link_info_size <= 0x1C) return -1; // LinkInfoSize must be minimum 28 bytes
     TRY(read_u32(buf, len, off, &info->link_info_header_size));
 
     // LinkInfoFlags:
