@@ -193,7 +193,7 @@ static int deserialize_linkinfo(const uint8_t* buf, size_t len, size_t* off, Lin
     size_t linkinfo_start = *off;
 
     TRY(read_u32(buf, len, off, &info->link_info_size));
-    if(info->link_info_size <= 0x1C) return -1; // LinkInfoSize must be minimum 28 bytes
+    if(info->link_info_size < 0x1C) return -1; // LinkInfoSize must be minimum 28 bytes
     TRY(read_u32(buf, len, off, &info->link_info_header_size));
 
     // LinkInfoFlags:
@@ -561,7 +561,7 @@ static int deserialize_extradata(const uint8_t* buf, size_t len, size_t* off, Ex
 int deserialize_lnk(const uint8_t* buf, size_t len, LNKGeneratorState* state){
     memset(state, 0, sizeof(*state));
     size_t off = 0;
-    deserialize_header(buf, len, &off, &state->header, &state->core); // always
+    TRY(deserialize_header(buf, len, &off, &state->header, &state->core));
     
     // LinkTargetIDList (if HasLinkTargetIDList)
     if(state->core.has_link_target_idlist)
