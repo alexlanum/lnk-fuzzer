@@ -148,20 +148,17 @@ static int serialize_linkinfo(uint8_t* buf, size_t cap, size_t* off, const LinkI
     // VolumeID
     if(linkinfo->has_volume_id){
         size_t volumeid_offset = linkinfo_start + linkinfo->volume_id_offset;
-        printf("  linkinfo: volumeid start\n");
         TRY(write_u32(buf, cap, &volumeid_offset, linkinfo->volume_id.volume_id_size));
         TRY(write_u32(buf, cap, &volumeid_offset, (uint32_t)linkinfo->volume_id.drive_type));
         TRY(write_u32(buf, cap, &volumeid_offset, linkinfo->volume_id.drive_serial_number));
         TRY(write_u32(buf, cap, &volumeid_offset, linkinfo->volume_id.volume_label_offset));
     
         if(linkinfo->volume_id.has_label_unicode){
-            printf("  linkinfo: volumeid label unicode\n");
             TRY(write_u32(buf, cap, &volumeid_offset, linkinfo->volume_id.volume_label_offset_unicode));
             size_t data_offset = linkinfo_start + linkinfo->volume_id_offset + linkinfo->volume_id.volume_label_offset_unicode;
             size_t data_len = utf16le_bytelen(linkinfo->volume_id.data_unicode, sizeof(linkinfo->volume_id.data_unicode));
             TRY(write_bytes(buf, cap, &data_offset, linkinfo->volume_id.data_unicode, data_len));
         } else{
-            printf("  linkinfo: volumeid label ansi\n");
             size_t data_offset = linkinfo_start + linkinfo->volume_id_offset + linkinfo->volume_id.volume_label_offset;
             size_t data_len = strlen(linkinfo->volume_id.data_ansi) + 1;
             TRY(write_bytes(buf, cap, &data_offset, linkinfo->volume_id.data_ansi, data_len));
@@ -172,7 +169,6 @@ static int serialize_linkinfo(uint8_t* buf, size_t cap, size_t* off, const LinkI
     if(linkinfo->has_local_base_path){
         size_t lbp_offset = linkinfo_start + linkinfo->local_base_path_offset;
         size_t lbp_len = strlen(linkinfo->local_base_path) + 1;
-        printf("  linkinfo: local_base_path\n");
         TRY(write_bytes(buf, cap, &lbp_offset, linkinfo->local_base_path, lbp_len));
     }
 
@@ -182,7 +178,6 @@ static int serialize_linkinfo(uint8_t* buf, size_t cap, size_t* off, const LinkI
         CommonNetworkRelativeLink const* cnrl = &linkinfo->common_network_relative_link;
 
         // constant header fields
-        printf("  linkinfo: common_network_relative_link\n");
         TRY(write_u32(buf, cap, &cnrl_offset, cnrl->common_network_relative_link_size));
         TRY(write_u32(buf, cap, &cnrl_offset, cnrl->common_network_relative_link_flags));
         TRY(write_u32(buf, cap, &cnrl_offset, cnrl->net_name_offset));
@@ -198,22 +193,18 @@ static int serialize_linkinfo(uint8_t* buf, size_t cap, size_t* off, const LinkI
         if(cnrl->has_unicode_fields){
             // NetNameUnicode (always present)
             size_t netname_offset = cnrl_start + cnrl->net_name_offset_unicode;
-            printf("  \tnetname_unicode\n");
             TRY(write_bytes(buf, cap, &netname_offset, cnrl->net_name_unicode, utf16le_bytelen(cnrl->net_name_unicode, sizeof(cnrl->net_name_unicode))));
             if(cnrl->has_device_name_unicode){
                 size_t devicename_offset = cnrl_start + cnrl->device_name_offset_unicode;
-                printf("  \tdevice_name_unicode\n");
                 TRY(write_bytes(buf, cap, &devicename_offset, cnrl->device_name_unicode, utf16le_bytelen(cnrl->device_name_unicode, sizeof(cnrl->device_name_unicode))));
             }
         } else{
             // NetName (always present)
             size_t netname_offset = cnrl_start + cnrl->net_name_offset;
-            printf("  \tnetname\n");
             TRY(write_bytes(buf, cap, &netname_offset, cnrl->net_name, strlen(cnrl->net_name) + 1));
             // DeviceName
             if(cnrl->has_device_name){
                 size_t devicename_offset = cnrl_start + cnrl->device_name_offset;
-                printf("  \tdevicename\n");
                 TRY(write_bytes(buf, cap, &devicename_offset, cnrl->device_name, strlen(cnrl->device_name) + 1));
             }
         }
@@ -221,7 +212,6 @@ static int serialize_linkinfo(uint8_t* buf, size_t cap, size_t* off, const LinkI
 
     // CommonPathSuffix (always present, ANSI string)
     size_t cps_offset = linkinfo_start + linkinfo->common_path_suffix_offset;
-    printf("  linkinfo: common_path_suffix\n");
     TRY(write_bytes(buf, cap, &cps_offset, linkinfo->common_path_suffix, strlen(linkinfo->common_path_suffix) + 1));
 
     // Unicode strings
@@ -320,23 +310,18 @@ static int serialize_extradata(uint8_t* buf, size_t cap, size_t* off, const Extr
 int serialize_lnk(uint8_t* buf, size_t cap, size_t* out_len, const LNKGeneratorState* state){
     size_t offset = 0;
 
-    printf("serialize: header\n");
     TRY(serialize_header(buf, cap, &offset, &state->header));
 
-    printf("serialize: idlist\n");
     if(state->core.has_link_target_idlist)
         TRY(serialize_idlist(buf, cap, &offset, &state->linktargetidlist));
 
-    printf("serialize: linkinfo\n");
     if(state->core.has_linkinfo)
         TRY(serialize_linkinfo(buf, cap, &offset, &state->linkinfo));
 
-    printf("serialize: stringdata\n");
     int is_unicode = (state->header.link_flags & 0x80) != 0;
     if(state->core.has_stringdata)
         TRY(serialize_stringdata(buf, cap, &offset, &state->stringdata, is_unicode));
 
-    printf("serialize: extradata\n");
     if(state->core.has_extradata)
         TRY(serialize_extradata(buf, cap, &offset, &state->extradata));
 
