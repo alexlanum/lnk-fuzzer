@@ -1215,11 +1215,9 @@ Since I've modeled 100+ structure-aware mutation operators across 14 different g
 
 
 
-#### Scheduling strategy
+#### Mutation operator scheduler
 
-Probability matching outperforms deterministic optimism in this case because operator effectiveness is everchanging; an operator that was productive early on in fuzzing becomes useless once those paths are saturated. UCB1 is slow to let go of previously successful operators because its mean reward stays high from historical successes, whereas Thompson Sampling naturally adapts because recent failures widen the posterior, producing lower samples, and selection shifts to other operators without needing an explicit decay mechanism.
-
-Each operator maintains a $Beta(\alpha, \beta)$ posterior distribution, where:
+Each operator maintains a $Beta(\alpha, \beta)$ posterior distribution:
 
 - $\alpha = 1$ and $\beta = 1$ initially (assumes nothing about success rates 0-100).
 - when the operator is applied and the resulting input discovers new coverage, $\alpha$ is incremented.
@@ -1544,10 +1542,51 @@ StringData deserialization:
 ```
 
 
-### Final custom fuzzer architecture
+## Final custom fuzzer architecture
 1. AFL++ gives raw bytes (seed)                             → `mutator.c` (`afl_custom_fuzz` entry point)
 2. deserialize the seed bytes                               → `deserialize.c`
 3. mutate the struct with mutation operators                → `mutate.c` / `mutate.h`
 4. serialize the mutated struct back to bytes               → `serialize.c`
 5. AFL++ interface feeds those bytes to the harness         → `mutator.c` (return to AFL++)
 6. harness program is executed by AFL++ with mutated bytes  → `harness.c`
+
+### (`mutate.c`) group/op scheduler
+> Beta: $\alpha$ is the number of successes (found new coverage) plus one. $\beta$ is the number of failures (no new coverage) plus one. You start at 1 (the prior) so the success/fail rate is equal initally.
+
+Each mutation operator group is given an alpha/beta which decides the section of the LNK format to target (ex. PIDL). The mutation operator alpha/beta decides which specific mutation within that section to apply. There are two levels because picking the right section first narrows the search fast, whereas a single-layered sampling trial across 100+ operators would take a long time to learn which areas of the foramt are productive.
+
+Since you don't know the success rate of an operator producing new coverage, a Beta is used to model the probability of its success based on feedback. Early on with $\alpha=1$ and $\beta=1$, the distribution is flat — could be anything from 0% to 100%. After 1000 runs with 50 successes, the distribution narrows to ~5%. At this point, the scheduler can be confident that this operator produces coverage ~5% of the time, and therefore can prioritize it over operators in the same group whose distributions center near zero (many runs, few successes).
+
+Beta distribution's mean:
+```math
+E[x_i] = \frac{\alpha_i}{\alpha_i + \beta_i}
+```
+This is the estimated probability of this operator/group producing new coverage. An operator with $\alpha=51$, $\beta=950$ has an estimated success rate of 51/1001 $\approx$ 5%. One with $\alpha=2$, $\beta=998$ has 2/1000 $\approx$ 0.2%. The sampler naturally favors the first.
+
+Important detail:
+The Beta distribution is a probability distribution — sampling from it doesn't give you the mean every time. It gives you a random value around the mean, with spread determined by how much data you have.
+An operator with $\alpha=51$ $\beta=950$ has a mean of ~5%. But one sample might give you 4.2%, the next 5.8%, the next 3.9%. It changes around. The spread depends on how much data you have; more trials means tighter clustering around the true mean, less trials means wider variance.
+An operator with $\alpha=2$ $\beta=3$ has a mean of 40%. But with so little data, its samples are wildly spread — one sample might give you 15%, the next 72%, the next 38%.
+That second operator might occasionally sample higher than the first, even though its true success rate might actually be lower. So it gets picked and tried again, giving you more data about it. This randomness in sampling is what makes Thompson Sampling explore uncertain operators instead of always picking the current best. If you were to only pick the operator with the highest mean every time, you'd never try anything new after the first few hundred rounds.
+
+#### Selection (Thompson Sampling)
+For each operator candidate $i$, draw a random sample:
+```math
+x_i \sim \text{Beta}(\alpha_i, \beta_i)
+```
+Select: $chosen = argmax(x_i)$
+
+Mutation operators with higher $\alpha$ relative to $\beta$ produce higher samples more often, so they get selected more. But because it's a random sample rather than just taking the mean, operators with low data (low $\alpha + \beta$) vary drastically; they occasionally produce high samples, which means they still get explored. This is how Thompson Sampling balances exploitation (use what works) with exploration (try uncertain things).
+
+Two-layer selection:
+```math
+\text{Level 1:} \quad g^* = \arg\max_g \, x_g \quad \text{where} \quad x_g \sim \text{Beta}(\alpha_g, \beta_g)
+```
+
+```math
+\text{Level 2:} \quad i^* = \arg\max_{i \in g^*} \, x_i \quad \text{where} \quad x_i \sim \text{Beta}(\alpha_i, \beta_i)
+```
+- $*$ means "chosen"
+- $g*$ is the chosen group
+- $i \in g*$ means only operators belonging to that group
+- $i*$ is the chosen operator

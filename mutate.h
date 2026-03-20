@@ -139,7 +139,7 @@ typedef enum {
     MUTATE_FILE_APPEND_GARBAGE,
     MUTATE_FILE_SECTION_OVERLAP,                // sections overlap in byte layout
 
-    MUTATE_COUNT,                               // must be last
+    MUTATE_COUNT
 } MutationOperator;
 
 /**
