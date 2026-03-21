@@ -1220,7 +1220,7 @@ Since I've modeled 100+ structure-aware mutation operators across 14 different g
 Each operator maintains a $Beta(\alpha, \beta)$ posterior distribution:
 
 - $\alpha = 1$ and $\beta = 1$ initially (assumes nothing about success rates 0-100).
-- when the operator is applied and the resulting input discovers new coverage, $\alpha$ is incremented.
+- when the mutation operator is applied and the resulting mutated input discovers new coverage, $\alpha$ is incremented.
 - when it does not, $\beta$ is incremented.
 
 To select an operator: sample a random value from each valid operator's $Beta(\alpha, \beta)$ distribution, then pick the operator whose sample is highest.
@@ -1228,11 +1228,11 @@ To select an operator: sample a random value from each valid operator's $Beta(\a
 Probability matching is expected to be quite slow, so the scheduler can be divised into two levels to improve convergence:
 
 1. probability matching over operator GROUPS.
-2. within the chosen group, select a specific operator using either deterministic optimism or probability matching.
+2. within the chosen group, select a specific operator using a probability matching algorithm.
 
 This ensures all LNK sections are explored early.
 
-> If after running the fuzzer I see evidence that it's converging too slowly or getting stuck, I plan on swapping the approach in MOPT's PSO at the group level while keeping Thompson Sampling within groups at the operator level.
+> If after running the fuzzer I see evidence that it's converging too slowly or getting stuck, I plan on swapping the scheduler for groups to MOPT's PSO approach (while still keeping Thompson Sampling at the operator level).
 
 
 
