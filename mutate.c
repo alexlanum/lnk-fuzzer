@@ -184,15 +184,30 @@ static int op_precondition(MutationOperator op, LNKGeneratorState* state, LNKLay
         case MUTATE_PIDL_INNER_CB:
             return layout->has_link_target_idlist && state->linktargetidlist.item_count > 0;
 
-        // more added as i implement them ...
+        // add more as i go ...
 
         default:
             return 0; // not implemented
     }
 }
 
+static void op_apply(MutationOperator op, LNKGeneratorState* state, LNKLayout* layout){
+    switch(op){
+        case MUTATE_FLAG_SINGLE_BIT:
+        {
+            int rndm_bit = rand() % 32; // pick a random bit 0-31 to toggle inside link_flags
+            state->header.link_flags ^= (1u << rndm_bit); // shift by that many bits and set it
+            break;
+        }
+
+        // add more as i go ...
+
+        default:
+            break;
+    }
+}
+
 MutationOperator mutate_apply(LNKGeneratorState* state, LNKLayout* layout){
-    
     // Lvl 1: Select a group using Thompson Sampling
     // for k = 1..K, sample θ̂_k ~ Beta(α_k, β_k)
     // K = groups
@@ -237,11 +252,10 @@ MutationOperator mutate_apply(LNKGeneratorState* state, LNKLayout* layout){
         }
     }
 
-    // apply the mutation
-    //
-    //
-    //
-    //
+    // apply mutation
+    op_apply(chosen_op, state, layout);
+
+    return chosen_op;
 }
 
 
