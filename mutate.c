@@ -123,22 +123,57 @@ static MutationOperatorGroup op_to_group[MUTATE_COUNT] = {
  * Scheduler infrastructure functions
  */
 
-static double sample_gamma(double shape){
+// convert uniform random numbers into Gamma-distributed ones (produce Gamma samples)
+static double sample_gamma(double shape){    
     if(shape < 1.0){
-        // boost: Gamma(shape) = Gamma(shape + 1) * U^(1 / shape)
+        // unlikely that this will trigger
+        // Gamma(shape) = Gamma(shape + 1) * U^(1 / shape)
         double u = (double)rand() / RAND_MAX;
         return sample_gamma(shape + 1.0) * pow(u, 1.0 / shape);
     }
+
+    // Marsaglia and Tsang method for shape >= 1
+    double d = shape = 1.0/3.0;
+    double c = 1.0 / sqrt(9.0 * d);
+    while(1){
+        double x, v;
+        do{
+            // generate standard normal using Box-Muller
+            double u1 = (double)rand() / RAND_MAX;
+            double u2 = (double)rand() / RAND_MAX;
+            x = sqrt(-2.0 * log(u1)) * cos(2.0 * 3.14159265358979 * u2);
+            v = 1.0 + c * x;
+        } while (v <= 0.0);
+        v = v * v * v;
+        double u = (double)rand() / RAND_MAX;
+        if (u < 1.0 - 0.0331 * (x * x) * (x*x)) return d * v;
+        if (log(u) < 0.5*x*x + d * (1.0 - v + log(v))) return d * v;
+    }
 }
 
+// produce Beta samples (Beta = Gamma/Gamma)
 static double sample_beta(double a, double b){
-    // x = Gamma(alpha)
-    // y = Gamma(beta)
-    // Beta = x / (x + y)
+    double x = sample_gamma(a); // x = Gamma(alpha)
+    double y = sample_gamma(b); // y = Gamma(beta)
+    return x / (x + y); // Beta = x / (x + y)
 }
 
 static MutationOperator mutate_apply(LNKGeneratorState* state, LNKLayout* layout){
-    // scheduler for both groups and operators themselves
+    
+    // Lvl 1: Mutation operator group
+    // for k = 1..K, sample θ̂_k ~ Beta(α_k, β_k)
+    // in this case, K = groups, not individual operators
+    double best = -1.0;
+    MutationOperatorGroup group = 0;
+    for(int g = 0; g < GROUP_COUNT; g++){
+        double theta = sample_beta(group_alpha[g], group_beta[g]);
+        if(theta > best){
+            best = theta;
+            group = g;
+        }
+    }
+    // x_t = argmax_k θ̂_k
+    // meaning the group with the highest sample wins
 
 }
 
