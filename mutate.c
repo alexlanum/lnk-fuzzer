@@ -158,30 +158,90 @@ static double sample_beta(double a, double b){
     return x / (x + y); // Beta = x / (x + y)
 }
 
-static MutationOperator mutate_apply(LNKGeneratorState* state, LNKLayout* layout){
+// check if an operator is valid for this input by ensuring satisfaction of required preconditions
+static int op_precondition(MutationOperator op, LNKGeneratorState* state, LNKLayout* layout){
+    switch(op){
+        case MUTATE_FLAG_SINGLE_BIT:
+        case MUTATE_FLAG_ALL_SET:
+        case MUTATE_FLAG_ALL_CLEAR:
+        case MUTATE_FLAG_RESERVED_BITS:
+        case MUTATE_FLAG_DESYNC_ISUNICODE:
+            return 1; // no precondition, header always exists
+        
+        case MUTATE_PIDL_INSERT_ITEM:
+        case MUTATE_PIDL_DEPTH:
+            return layout->has_link_target_idlist; // item_count < 0 allowed bc these add items, the rest need something already there
+        case MUTATE_PIDL_CLASS_TYPE:
+        case MUTATE_PIDL_REORDER_ITEM:
+        case MUTATE_PIDL_REMOVE_ITEM:
+        case MUTATE_PIDL_DUPLICATE_ITEM:
+        case MUTATE_PIDL_PARENT_CHILD_MISMATCH:
+        case MUTATE_PIDL_CHAIN_TRUNCATION:
+        case MUTATE_PIDL_TOTAL_SIZE_DESYNC:
+        case MUTATE_PIDL_DELEGATE_CLSID:
+        case MUTATE_PIDL_MISSING_TERMINAL:
+        case MUTATE_PIDL_NONZERO_TERMINAL:
+        case MUTATE_PIDL_INNER_CB:
+            return layout->has_link_target_idlist && state->linktargetidlist.item_count > 0;
+
+        // more added as i implement them ...
+
+        default:
+            return 0; // not implemented
+    }
+}
+
+MutationOperator mutate_apply(LNKGeneratorState* state, LNKLayout* layout){
     
-    // Lvl 1: Mutation operator group
+    // Lvl 1: Select a group using Thompson Sampling
     // for k = 1..K, sample θ̂_k ~ Beta(α_k, β_k)
-    // in this case, K = groups, not individual operators
-    double best = -1.0;
-    MutationOperatorGroup group = 0;
+    // K = groups
+    double best_score = -1.0;
+    MutationOperatorGroup chosen_group = 0;
     for(int g = 0; g < GROUP_COUNT; g++){
         double theta = sample_beta(group_alpha[g], group_beta[g]);
-        if(theta > best){
-            best = theta;
-            group = g;
+        if(theta > best_score){
+            best_score = theta;
+            chosen_group = g;
         }
     }
-    // x_t = argmax_k θ̂_k
-    // meaning the group with the highest sample wins
     
-    // Lvl 2: Same algorithm within the chosen group
+    // Lvl 2: Collect valid operators within the group using Thompson Sampling
+    // same algo but K = individual operators
     MutationOperator candidates[MUTATE_COUNT];
     int count = 0;
     for(int op = 0; op < MUTATE_COUNT; op++){
-        
+        if(op_to_group[op] != chosen_group) continue;
+        if(!op_precondition(op, state, layout)) continue;
+        candidates[count++] = op;
     }
 
+    if(count == 0){
+        // no valid operators in this group, use a random valid operator
+        for(int op = 0; op < MUTATE_COUNT; op++){
+            if(op_precondition(op, state, layout)) continue;
+            candidates[count++] = op;
+        }
+    }
+
+    if(count == 0) return -1; // nothing applicable
+
+    // Thompson sample among candidates
+    best_score = -1.0;
+    MutationOperator chosen_op = candidates[0];
+    for(int i = 0; i < count; i++){
+        double s = sample_beta(op_alpha[candidates[i]], op_beta[candidates[i]]);
+        if(s > best_score){
+            best_score = s;
+            chosen_op = candidates[i];
+        }
+    }
+
+    // apply the mutation
+    //
+    //
+    //
+    //
 }
 
 
