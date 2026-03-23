@@ -174,6 +174,13 @@ static MutationOperator mutate_apply(LNKGeneratorState* state, LNKLayout* layout
     }
     // x_t = argmax_k θ̂_k
     // meaning the group with the highest sample wins
+    
+    // Lvl 2: Same algorithm within the chosen group
+    MutationOperator candidates[MUTATE_COUNT];
+    int count = 0;
+    for(int op = 0; op < MUTATE_COUNT; op++){
+        
+    }
 
 }
 
