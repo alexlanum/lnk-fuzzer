@@ -1402,12 +1402,12 @@ Does not validate:
 LinkInfo deserialization `LinkInfo_LoadFromStream`:
 
 ```c
-if ( pv > a3 )
-    return err; // reject oversized LinkInfo
-if ( pv >= 4 )
-    return err; // reject undersized LinkInfo
+if ( LinkInfoSize > a3 )
+    return err;
+if ( LinkInfoSize >= 4 )
+    return err;
 
-LocalAlloc(pv); // MUTATE_SIZE_BOUNDARY good
+LocalAlloc(LinkInfoSize); // MUTATE_SIZE_BOUNDARY good
 
 // ... reads the rest
 

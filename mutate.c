@@ -122,7 +122,6 @@ static MutationOperatorGroup op_to_group[MUTATE_COUNT] = {
 /**
  * Scheduler infrastructure functions
  */
-
 // convert uniform random numbers into Gamma-distributed ones (produce Gamma samples)
 static double sample_gamma(double shape){    
     if(shape < 1.0){
@@ -191,19 +190,95 @@ static int op_precondition(MutationOperator op, LNKGeneratorState* state, LNKLay
     }
 }
 
-static void op_apply(MutationOperator op, LNKGeneratorState* state, LNKLayout* layout){
+// GROUP_FLAGS (LinkFlags) mutation operators
+static void apply_flags(MutationOperator op, LNKGeneratorState* state){
     switch(op){
-        case MUTATE_FLAG_SINGLE_BIT:
-        {
+        case MUTATE_FLAG_SINGLE_BIT:{
             int rndm_bit = rand() % 32; // pick a random bit 0-31 to toggle inside link_flags
             state->header.link_flags ^= (1u << rndm_bit); // shift by that many bits and set it
             break;
         }
 
-        // add more as i go ...
-
-        default:
+        case MUTATE_FLAG_ALL_SET:{
+            // forces the presence of every optional section
+            state->header.link_flags = 0xFFFFFFFF;
             break;
+        }
+
+        case MUTATE_FLAG_ALL_CLEAR:{
+            // no sections present, but file still has data after header
+            // parser expects nothing but finds bytes
+            state->header.link_flags = 0x00000000;
+            break;
+        }
+
+        case MUTATE_FLAG_RESERVED_BITS:{
+            // bits 27-31 are unused/reserved
+            int mode = rand() % 3;
+            if(mode == 0){
+                // force set a reserved bit
+                int rndm_bit = 27 + (rand() % 5);
+                state->header.link_flags |= (1u << rndm_bit);
+            } else if(mode == 1){
+                // flip
+                int rndm_bit = 27 + (rand() % 5);
+                state->header.link_flags ^= (1u << rndm_bit);
+            } else{
+                // overwrite all reserved bits
+                state->header.link_flags &= ~0xF8000000;
+                state->header.link_flags |= ((rand() & 0x1F) << 27); // shift results in any 5-bit pattern, maximum exploration
+            }
+            break;
+        }
+
+        case MUTATE_FLAG_DESYNC_ISUNICODE:{
+            // flip bit 7 (IsUnicode) to make the parser interpret data wrong
+            // RE revealed that IsUnicode flows directly into string parsing, no independent validation.
+            state->header.link_flags ^= 0x00000080;
+            break;
+        }
+
+        default: break;
+    }
+}
+
+// GROUP_SIZES mutation operators
+static void apply_sizes(MutationOperator op, LNKGeneratorState* state){
+    switch(op){
+        case MUTATE_SIZE_ZERO:{
+            // ...
+        }
+
+        case MUTATE_SIZE_UNDERFLOW:{
+            // smaller than minimum valid
+        }
+
+        case MUTATE_SIZE_DESYNC:{
+            // size field inconsistent with actual content
+        }
+
+        case MUTATE_SIZE_BOUNDARY:{
+            // interesting boundary values: MAX, MAX-1, MAX+1
+        }
+        default: break;
+    }
+}
+
+// GROUP_PIDL (LinkTargetIDList) mutation operators
+static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
+
+}
+
+// do mutation
+static void op_apply(MutationOperator op, LNKGeneratorState* state, LNKLayout* layout){
+    switch(op_to_group[op]){
+        case GROUP_FLAGS: apply_flags(op, state); break;
+        case GROUP_SIZES: apply_sizes(op, state); break;
+        case GROUP_PIDL:  apply_pidl(op, state);  break;
+        
+        // add more...
+
+        default: break;
     }
 }
 
