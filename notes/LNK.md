@@ -1402,17 +1402,28 @@ Does not validate:
 LinkInfo deserialization `LinkInfo_LoadFromStream`:
 
 ```c
-if ( LinkInfoSize > a3 )
+if ( LinkInfoSize > a3 ) // reject (too big for stream)
     return err;
-if ( LinkInfoSize >= 4 )
+if ( LinkInfoSize >= 4 ) // accept (big enough to hold at least the size field)
     return err;
+
+// if(LinkInfoSize < 4)
+//  skip allocation entirely
 
 LocalAlloc(LinkInfoSize); // MUTATE_SIZE_BOUNDARY good
 
-// ... reads the rest
+// ...
 
 linkinfo.dll!IsValidLinkInfo(); // validation where VolumeID offsets and whatnot get checked
 ```
+
+So there are multiple gates that check sizes at different thresholds:
+- `< 4` – allocation skipped entirely
+- `>= 4` but `< 0x1C` – allocated but fails `IsValidLinkInfo`
+- `>= 0x1C` – passes header check, reaches deeper validation
+- `VolumeIDSize < 0x10` – fails VolumeID check
+- `VolumeIDSize > remaining` – fails bounds check
+Each boundary value hits a different code path. `MUTATE_SIZE_BOUNDARY` can be used here.
 
 LinkInfo validation `linkinfo.dll!IsValidLinkInfo`:
 

@@ -52,7 +52,7 @@ typedef enum {
     MUTATE_SIZE_ZERO,
     MUTATE_SIZE_UNDERFLOW,              // smaller than minimum valid
     MUTATE_SIZE_DESYNC,                 // size field inconsistent with actual content
-    MUTATE_SIZE_BOUNDARY,               // interesting boundary values: MAX, MAX-1, MAX+1
+    MUTATE_SIZE_BOUNDARY,               // set a size field to an interesting boundary value: MAX, MAX-1, MAX+1
 
     // PIDL / IDList
     MUTATE_PIDL_REORDER_ITEM,

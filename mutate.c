@@ -243,7 +243,13 @@ static void apply_flags(MutationOperator op, LNKGeneratorState* state){
 }
 
 // GROUP_SIZES mutation operators
-static void apply_sizes(MutationOperator op, LNKGeneratorState* state){
+static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout* layout){
+    uint32_t boundaries[] = {
+        0, 1, 2, 3, 4, 0x0F, 0x10, 0x13, 0x14,
+        0x1B, 0x1C, 0x23, 0x24, 0xFFFF, 0x10000,
+        0x7FFFFFFF, 0xFFFFFFFF
+    };
+
     switch(op){
         case MUTATE_SIZE_ZERO:{
             // ...
@@ -258,7 +264,13 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state){
         }
 
         case MUTATE_SIZE_BOUNDARY:{
-            // interesting boundary values: MAX, MAX-1, MAX+1
+            /*
+             * LinkInfo < 4                 . allocation skipped
+             * LinkInfo >= 4 but < 0x1C     . allocated, fails IsValidLinkInfo
+             * LinkInfo >= 0x1C             . passes header check, deeper validation
+             * VolumeIDSize < 0x10          . fails VolumeID check
+             * VolumeIDSize > remaining     . fails bounds check
+             */
         }
         default: break;
     }
@@ -272,9 +284,9 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
 // do mutation
 static void op_apply(MutationOperator op, LNKGeneratorState* state, LNKLayout* layout){
     switch(op_to_group[op]){
-        case GROUP_FLAGS: apply_flags(op, state); break;
-        case GROUP_SIZES: apply_sizes(op, state); break;
-        case GROUP_PIDL:  apply_pidl(op, state);  break;
+        case GROUP_FLAGS: apply_flags(op, state);         break;
+        case GROUP_SIZES: apply_sizes(op, state, layout); break;
+        case GROUP_PIDL:  apply_pidl(op, state);          break;
         
         // add more...
 
@@ -296,8 +308,7 @@ MutationOperator mutate_apply(LNKGeneratorState* state, LNKLayout* layout){
         }
     }
     
-    // Lvl 2: Collect valid operators within the group using Thompson Sampling
-    // same algo but K = individual operators
+    // Lvl 2: Collect valid operators within the group
     MutationOperator candidates[MUTATE_COUNT];
     int count = 0;
     for(int op = 0; op < MUTATE_COUNT; op++){
@@ -317,6 +328,7 @@ MutationOperator mutate_apply(LNKGeneratorState* state, LNKLayout* layout){
     if(count == 0) return -1; // nothing applicable
 
     // Thompson sample among candidates
+    // K = individual operators
     best_score = -1.0;
     MutationOperator chosen_op = candidates[0];
     for(int i = 0; i < count; i++){
