@@ -250,6 +250,8 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
         0x7FFFFFFF, 0xFFFFFFFF
     };
 
+    int bcount = sizeof(boundaries) / sizeof(boundaries[0]);
+
     switch(op){
         case MUTATE_SIZE_ZERO:{
             // ...
@@ -264,12 +266,16 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
         }
 
         case MUTATE_SIZE_BOUNDARY:{
+            uint32_t val = boundaries[rand() % bcount];
+            int av = rand() % 4;
+            if(av == 0)
+                state->linkinfo.link_info_size = val;
             /*
-             * LinkInfo < 4                 . allocation skipped
-             * LinkInfo >= 4 but < 0x1C     . allocated, fails IsValidLinkInfo
-             * LinkInfo >= 0x1C             . passes header check, deeper validation
-             * VolumeIDSize < 0x10          . fails VolumeID check
-             * VolumeIDSize > remaining     . fails bounds check
+             * LinkInfoSize < 4               . allocation skipped
+             * LinkInfoSize >= 4 but < 0x1C   . allocated, fails IsValidLinkInfo
+             * LinkInfoSize >= 0x1C           . passes header check, deeper validation
+             * VolumeIDSize < 0x10            . fails VolumeID check
+             * VolumeIDSize > remaining       . fails bounds check
              */
         }
         default: break;
