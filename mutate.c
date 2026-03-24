@@ -268,15 +268,27 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
         case MUTATE_SIZE_BOUNDARY:{
             uint32_t val = boundaries[rand() % bcount];
             int av = rand() % 4;
-            if(av == 0)
+            if(av == 0){
+                // LinkInfoSize < 4 causes allocation to be skipped
+                // LinkInfoSize >= 4 && LinkInfoSize < 0x1C causes allocation to succeed but IsValidLinkInfo to fail
+                // LinkInfoSize >= 0x1C passes header check and reaches deeper validation logic
                 state->linkinfo.link_info_size = val;
-            /*
-             * LinkInfoSize < 4               . allocation skipped
-             * LinkInfoSize >= 4 but < 0x1C   . allocated, fails IsValidLinkInfo
-             * LinkInfoSize >= 0x1C           . passes header check, deeper validation
-             * VolumeIDSize < 0x10            . fails VolumeID check
-             * VolumeIDSize > remaining       . fails bounds check
-             */
+            } else if(av == 1){
+                // VolumeIDSize < 0x10 fails a check
+                // VolumeIDSize > size remaining in stream fails a bounds check
+                state->linkinfo.volume_id.volume_id_size = val;
+            } else if(av == 2 && layout->has_extradata){
+                // Block size > 0xFFFF: seeks backward in stream, silently terminates block pasing loop
+                // Block size < 8: terminates block parsing loop
+                // Valid range [8, 0xFFFF] -> IsValidDataBlock -> SHAddDataBlock
+                state->extradata.blocks[rand() % state->extradata.block_count].size = val;
+            } else{
+                // total_size controls how many bytes are allocated and read in ILLoadFromStreamEx
+                // then IDListContainerIsConsistent checks those bytes against the PIDL items
+                // total_size = boundary value: creates a mismatch between declared size and actual content
+                state->linktargetidlist.total_size = val;
+            }
+            break;
         }
         default: break;
     }
@@ -284,7 +296,7 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
 
 // GROUP_PIDL (LinkTargetIDList) mutation operators
 static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
-
+    
 }
 
 // do mutation
