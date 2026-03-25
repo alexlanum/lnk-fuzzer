@@ -3,6 +3,7 @@
 // Mutation operators
 #include "mutate.h"
 #include "model.h"
+#include <cstdint>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -249,44 +250,98 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
         0x1B, 0x1C, 0x23, 0x24, 0xFFFF, 0x10000,
         0x7FFFFFFF, 0xFFFFFFFF
     };
-
+    
     int bcount = sizeof(boundaries) / sizeof(boundaries[0]);
+
+    // valid targets
+    enum { T_IDLIST, T_LINKINFO, T_VOLUMEID, T_CNRL, T_EXTRA, T_PROPSTORE_STOR, T_PROPSTORE_VAL };
+    int targets[7];
+    int tcount = 0;
+
+    if(layout->has_link_target_idlist) targets[tcount++] = T_IDLIST;
+
+    if(layout->has_linkinfo) targets[tcount++] = T_LINKINFO;
+    
+    if(layout->has_linkinfo && state->linkinfo.has_volume_id) targets[tcount++] = T_VOLUMEID;
+    
+    if(layout->has_linkinfo && state->linkinfo.has_common_network_relative_link) targets[tcount++] = T_CNRL;
+    
+    if(layout->has_extradata && state->extradata.block_count > 0) targets[tcount++] = T_EXTRA;
+    
+    if(layout->has_propstore_block) targets[tcount++] = T_PROPSTORE_STOR;
+    
+    if(layout->has_propstore_block) targets[tcount++] = T_PROPSTORE_VAL;
+
+    if(tcount == 0) return;
+    int t = targets[rand() % tcount]; // choose a random valid field to mutate
 
     switch(op){
         case MUTATE_SIZE_ZERO:{
-            // ...
+            switch(t){
+                case T_IDLIST:
+                    state->linktargetidlist.total_size = 0; break;
+                case T_LINKINFO:
+                    state->linkinfo.link_info_size = 0; break;
+                case T_VOLUMEID:
+                    state->linkinfo.volume_id.volume_id_size = 0; break;
+                case T_CNRL:
+                    state->linkinfo.common_network_relative_link.common_network_relative_link_size = 0; break;
+                case T_EXTRA:
+                    state->extradata.blocks[rand() % state->extradata.block_count].size = 0; break;
+                case T_PROPSTORE_STOR:
+                    // [AV] storage_size = 0 terminates chunk walk early (while(chunkSize != 0))
+                    for(int i = 0; i < state->extradata.block_count; i++)
+                        if(state->extradata.blocks[i].type == EXTRA_PROPERTY_STORE && state->extradata.blocks[i].data)
+                            memset(state->extradata.blocks[i].data, 0, 4);
+                    break;
+                case T_PROPSTORE_VAL:
+                    // [AV] value_size = 0 terminates value walk (while(*(ULONG*)prop != 0))
+                    for(int i = 0; i < state->extradata.block_count; i++)
+                        if(state->extradata.blocks[i].type == EXTRA_PROPERTY_STORE && state->extradata.blocks[i].data){
+                            uint8_t* payload = state->extradata.blocks[i].data;
+                            size_t storsize;
+                            memcpy(&storsize, payload, 4);
+                        }
+
+                    break;
+            }
+            break;
         }
 
-        case MUTATE_SIZE_UNDERFLOW:{
-            // smaller than minimum valid
+        case MUTATE_SIZE_UNDERFLOW: {
+            switch (t) {
+                case T_LINKINFO: state->linkinfo.link_info_size = 3; break;
+                case T_VOLID:    state->linkinfo.volume_id.volume_id_size = 0x0F; break;
+                case T_CNRL:     state->linkinfo.common_network_relative_link.common_network_relative_link_size = 0x13; break;
+                case T_EXTRA:    state->extradata.blocks[rand() % state->extradata.block_count].size = 7; break;
+                case T_IDLIST:   state->linktargetidlist.total_size = 1; break;
+                default: break;
+            }
+            break;
         }
 
-        case MUTATE_SIZE_DESYNC:{
-            // size field inconsistent with actual content
+        case MUTATE_SIZE_DESYNC: {
+            int delta = (rand() % 100) - 50;
+            switch (t) {
+                case T_LINKINFO: state->linkinfo.link_info_size += delta; break;
+                case T_VOLID:    state->linkinfo.volume_id.volume_id_size += delta; break;
+                case T_CNRL:     state->linkinfo.common_network_relative_link.common_network_relative_link_size += delta; break;
+                case T_IDLIST:   state->linktargetidlist.total_size += delta; break;
+                case T_EXTRA:    state->extradata.blocks[rand() % state->extradata.block_count].size += delta; break;
+                default: break;
+            }
+            break;
         }
 
-        case MUTATE_SIZE_BOUNDARY:{
+        case MUTATE_SIZE_BOUNDARY: {
             uint32_t val = boundaries[rand() % bcount];
-            int av = rand() % 4;
-            if(av == 0){
-                // LinkInfoSize < 4 causes allocation to be skipped
-                // LinkInfoSize >= 4 && LinkInfoSize < 0x1C causes allocation to succeed but IsValidLinkInfo to fail
-                // LinkInfoSize >= 0x1C passes header check and reaches deeper validation logic
-                state->linkinfo.link_info_size = val;
-            } else if(av == 1){
-                // VolumeIDSize < 0x10 fails a check
-                // VolumeIDSize > size remaining in stream fails a bounds check
-                state->linkinfo.volume_id.volume_id_size = val;
-            } else if(av == 2 && layout->has_extradata){
-                // Block size > 0xFFFF: seeks backward in stream, silently terminates block pasing loop
-                // Block size < 8: terminates block parsing loop
-                // Valid range [8, 0xFFFF] -> IsValidDataBlock -> SHAddDataBlock
-                state->extradata.blocks[rand() % state->extradata.block_count].size = val;
-            } else{
-                // total_size controls how many bytes are allocated and read in ILLoadFromStreamEx
-                // then IDListContainerIsConsistent checks those bytes against the PIDL items
-                // total_size = boundary value: creates a mismatch between declared size and actual content
-                state->linktargetidlist.total_size = val;
+            switch (t) {
+                case T_IDLIST:   state->linktargetidlist.total_size = val; break;
+                case T_LINKINFO: state->linkinfo.link_info_size = val; break;
+                case T_VOLID:    state->linkinfo.volume_id.volume_id_size = val; break;
+                case T_CNRL:     state->linkinfo.common_network_relative_link.common_network_relative_link_size = val; break;
+                case T_EXTRA:    state->extradata.blocks[rand() % state->extradata.block_count].size = val; break;
+                default: break;
             }
             break;
         }
@@ -296,7 +351,7 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
 
 // GROUP_PIDL (LinkTargetIDList) mutation operators
 static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
-    
+
 }
 
 // do mutation

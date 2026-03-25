@@ -539,7 +539,7 @@ static int deserialize_extradata(const uint8_t* buf, size_t len, size_t* off, Ex
     // are actively interpreted during _LoadFromStream.
     // PropertyStoreDataBlock is lazily parsed upon first property access.
     // All other blocks are stored but not interpreted during load (deserialization).
-    for(int i=0; i < extradata->block_count; i++){
+    for(int i = 0; i < extradata->block_count; i++){
         switch(extradata->blocks[i].type){
             case EXTRA_PROPERTY_STORE: layout->has_propstore_block   = 1; break;
             case EXTRA_DARWIN:         layout->has_darwin_block      = 1; break;
