@@ -1533,7 +1533,61 @@ Alignment constraints:
 - `CommonNetworkRelativeLinkOffset` must be 4-byte aligned
 - Unicode offsets must be 2-byte aligned
 
+CommonNetworkRelativeLink deserialization `linkinfo.dll!IsValidCNRLink`:
+```c
+IsValidCNRLink(const struct _cnrlink* cnrl, unsigned int remaining){
+    // 0x3E7B: remaining must be >= 0x14
+    if (remaining < 0x14) return 0;
 
+    // 0x3E84: cnrl->Size must be <= remaining
+    if (cnrl->Size > remaining) return 0;
+
+    // 0x3E8E: cnrl->Size must be >= 0x14
+    if (cnrl->Size < 0x14) return 0;
+
+    // 0x3E97: Flags bits 2-31 must be zero (only bit 0 and 1 allowed)
+    if (cnrl->Flags & 0xFFFFFFFC) return 0;
+
+    // 0x3EA4: NetNameOffset must be < Size
+    if (cnrl->NetNameOffset >= cnrl->Size) return 0;
+
+    // 0x3EAF-0x3EBB: NetName string must pass StringCbLengthA
+    StringCbLengthA(cnrl + NetNameOffset, Size - NetNameOffset);
+
+    // 0x3EBF: if ValidDevice (bit 0) set
+    if (cnrl->Flags & 0x01) {
+        // 0x3EC6: DeviceNameOffset must be < Size
+        if (cnrl->DeviceNameOffset >= cnrl->Size) return 0;
+        // DeviceName string must pass StringCbLengthA
+        StringCbLengthA(cnrl + DeviceNameOffset, Size - DeviceNameOffset);
+    }
+
+    // 0x3EE1: if NetNameOffset != 0x14, unicode fields exist
+    if (cnrl->NetNameOffset != 0x14) {
+        // 0x3EEB: Size must be >= 0x1C for unicode fields
+        if (cnrl->Size < 0x1C) return 0;
+
+        // 0x3EF0: NetNameOffsetUnicode must be < Size
+        if (cnrl->NetNameOffsetUnicode >= cnrl->Size) return 0;
+        // must be 2-byte aligned
+        if (cnrl->NetNameOffsetUnicode & 1) return 0;
+        // unicode NetName must pass StringCbLengthW
+        StringCbLengthW(cnrl + NetNameOffsetUnicode, Size - NetNameOffsetUnicode);
+
+        // 0x3F0D: if ValidDevice (bit 0) set
+        if (cnrl->Flags & 0x01) {
+            // 0x3F14: DeviceNameOffsetUnicode must be < Size
+            if (cnrl->DeviceNameOffsetUnicode >= cnrl->Size) return 0;
+            // must be 2-byte aligned
+            if (cnrl->DeviceNameOffsetUnicode & 1) return 0;
+            // unicode DeviceName must pass StringCbLengthW
+            StringCbLengthW(cnrl + DeviceNameOffsetUnicode, Size - DeviceNameOffsetUnicode);
+        }
+    }
+
+    return 1;
+}
+```
 
 ExtraData deserialization `SHReadDataBlockList`:
 
