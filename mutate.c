@@ -254,17 +254,28 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
     int bcount = sizeof(boundaries) / sizeof(boundaries[0]);
 
     // valid targets
-    enum { T_IDLIST, T_LINKINFO, T_VOLUMEID, T_CNRL, T_EXTRA, T_PROPSTORE_STOR, T_PROPSTORE_VAL };
-    int targets[7];
+    enum{
+        T_IDLIST,
+        T_LINKINFO,
+        T_VOLUMEID,
+        T_CNRL,
+        T_EXTRA,
+        T_PROPSTORE_STOR,
+        T_PROPSTORE_VAL_INT,
+        T_PROPSTORE_VAL_STR,
+        T_COUNT
+    };
+    int targets[T_COUNT];
     int tcount = 0;
 
-    if(layout->has_link_target_idlist) targets[tcount++] = T_IDLIST;
-    if(layout->has_linkinfo) targets[tcount++] = T_LINKINFO;
-    if(layout->has_linkinfo && state->linkinfo.has_volume_id) targets[tcount++] = T_VOLUMEID;
+    if(layout->has_link_target_idlist) targets[tcount++]                                           = T_IDLIST;
+    if(layout->has_linkinfo) targets[tcount++]                                                     = T_LINKINFO;
+    if(layout->has_linkinfo && state->linkinfo.has_volume_id) targets[tcount++]                    = T_VOLUMEID;
     if(layout->has_linkinfo && state->linkinfo.has_common_network_relative_link) targets[tcount++] = T_CNRL;
-    if(layout->has_extradata && state->extradata.block_count > 0) targets[tcount++] = T_EXTRA;
-    if(layout->has_propstore_block) targets[tcount++] = T_PROPSTORE_STOR;
-    if(layout->has_propstore_block) targets[tcount++] = T_PROPSTORE_VAL;
+    if(layout->has_extradata && state->extradata.block_count > 0) targets[tcount++]                = T_EXTRA;
+    if(layout->has_propstore_block) targets[tcount++]                                              = T_PROPSTORE_STOR;
+    if(layout->has_propstore_block) targets[tcount++]                                              = T_PROPSTORE_VAL_INT;
+    if(layout->has_propstore_block) targets[tcount++]                                              = T_PROPSTORE_VAL_STR;
 
     if(tcount == 0) return;
     int t = targets[rand() % tcount]; // choose a random valid field to mutate
@@ -300,20 +311,21 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
                         if(state->extradata.blocks[i].type == EXTRA_PROPERTY_STORE && state->extradata.blocks[i].data)
                             memset(state->extradata.blocks[i].data, 0, 4);
                     break;
-                case T_PROPSTORE_VAL:
+                case T_PROPSTORE_VAL_INT:
                     // [AV] value_size = 0: avoids serialized value walk (while(*(ULONG*)prop != 0))
                     // falls through to the hash-table lookup backend instead, tests what happens to
                     // code that expects the unfound property to exist if it wasn't found in hash-table
                     for(int i = 0; i < state->extradata.block_count; i++)
                         if(state->extradata.blocks[i].type == EXTRA_PROPERTY_STORE && state->extradata.blocks[i].data){
                             uint8_t* payload = state->extradata.blocks[i].data;
-                            size_t stor_size;
-                            memcpy(&stor_size, payload, 4);
-                            if(stor_size > 24 && state->extradata.blocks[i].size - 8)
-                                // zeroing payload[24] through payload[27] clears the first value_size of the first storage in the payload
-                                memset(payload + 24, 0, stor_size);
+                            uint32_t value_size; // at payload[24], controls how far the parser jumps to the next value within the set
+                            memcpy(&value_size, payload, 4);
+                            if(value_size > 24 && state->extradata.blocks[i].size - 8)
+                                memset(payload + 24, 0, value_size); // zeroing payload[24] through payload[27] clears the first value_size of the first storage in the payload
                         }
-
+                    break;
+                case T_PROPSTORE_VAL_STR:
+                    // ...
                     break;
             }
             break;
@@ -322,21 +334,48 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
         case MUTATE_SIZE_UNDERFLOW:{
             switch(t){
                 case T_LINKINFO:
-                    state->linkinfo.link_info_size = 3;
+                    // [AV] LinkInfoSize not big enough to hold the size field (< 4)
+                    state->linkinfo.link_info_size = rand() % 4;
                     break;
                 case T_VOLUMEID:
-                    state->linkinfo.volume_id.volume_id_size = 0x0F;
+                    // [AV] VolumeIDSize < 0x10: fails VolumeID check
+                    state->linkinfo.volume_id.volume_id_size = rand() % 0x10;
                     break;
                 case T_CNRL:
                     // [AV] CNRL size must be >= 0x14    
-                    state->linkinfo.common_network_relative_link.common_network_relative_link_size = 0x13;
+                    state->linkinfo.common_network_relative_link.common_network_relative_link_size = rand() % 0x14;
                     break;
-                case T_EXTRA:   
-                    state->extradata.blocks[rand() % state->extradata.block_count].size = 7;
+                case T_EXTRA:
+                    // [AV] BlockSize must be >= 8
+                    state->extradata.blocks[rand() % state->extradata.block_count].size = rand() % 8;
                     break;
-                case T_IDLIST:  
-                    state->linktargetidlist.total_size = 1;
+                case T_IDLIST:
+                    // [AV] minimum total_size is 2 (only terminator, two zero bytes): 0 and 1 both underflow
+                    state->linktargetidlist.total_size = rand() % 2;
                     break;
+                case T_PROPSTORE_STOR:
+                    // [AV] storage_size must be > 24 (4 size + 4 version + 16 fmtid)
+                    for(int i = 0; i < state->extradata.block_count; i++)
+                        if(state->extradata.blocks[i].type == EXTRA_PROPERTY_STORE && state->extradata.blocks[i].data){
+                            uint32_t undersized = rand() % 24;
+                            memcpy(state->extradata.blocks[i].data, &undersized, 4);
+                            break;
+                        }
+                    break;
+                case T_PROPSTORE_VAL_INT:
+                    // [AV] value_size > 0: accepted into serialized value walk even if too small to contain valid fields: walk proceeds with an undersized entry (size 1-8)
+                    // [AV] value_size must be >= 9 (4 size + 4 pid + 1 reserved)
+                    for(int i = 0; i < state->extradata.block_count; i++)
+                        if(state->extradata.blocks[i].type == EXTRA_PROPERTY_STORE && state->extradata.blocks[i].data){
+                            uint8_t* payload = state->extradata.blocks[i].data;
+                            uint32_t value_size; // at payload[24], controls how far the parser jumps to the next value within the set
+                            memcpy(&value_size, payload, 4);
+                            if(state->extradata.blocks[i].size - 8)
+                                // ...
+                        }
+                    break;
+                case T_PROPSTORE_VAL_STR:
+                        // ...
                 default:
                     break;
             }
