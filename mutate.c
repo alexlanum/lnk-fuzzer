@@ -317,11 +317,7 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
                     // code that expects the unfound property to exist if it wasn't found in hash-table
                     for(int i = 0; i < state->extradata.block_count; i++)
                         if(state->extradata.blocks[i].type == EXTRA_PROPERTY_STORE && state->extradata.blocks[i].data){
-                            uint8_t* payload = state->extradata.blocks[i].data;
-                            uint32_t value_size; // at payload[24], controls how far the parser jumps to the next value within the set
-                            memcpy(&value_size, payload, 4);
-                            if(value_size > 24 && state->extradata.blocks[i].size - 8)
-                                memset(payload + 24, 0, value_size); // zeroing payload[24] through payload[27] clears the first value_size of the first storage in the payload
+                            
                         }
                     break;
                 case T_PROPSTORE_VAL_STR:
@@ -364,15 +360,16 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
                     break;
                 case T_PROPSTORE_VAL_INT:
                     // [AV] value_size > 0: accepted into serialized value walk even if too small to contain valid fields: walk proceeds with an undersized entry (size 1-8)
-                    // [AV] value_size must be >= 9 (4 size + 4 pid + 1 reserved)
-                    for(int i = 0; i < state->extradata.block_count; i++)
+                    // [AV] value_size < 9 (4 size + 4 pid + 1 reserved): tesst _GetPropertyStore check
+                    for(int i = 0; i < state->extradata.block_count; i++){
                         if(state->extradata.blocks[i].type == EXTRA_PROPERTY_STORE && state->extradata.blocks[i].data){
-                            uint8_t* payload = state->extradata.blocks[i].data;
-                            uint32_t value_size; // at payload[24], controls how far the parser jumps to the next value within the set
-                            memcpy(&value_size, payload, 4);
-                            if(state->extradata.blocks[i].size - 8)
-                                // ...
+                            uint32_t payload_len = state->extradata.blocks[i].size - 8;
+                            if(payload_len > 28){ // ensure there are at least 29 bytes in the payload to know 24-27 exist and can be safely written to
+                                uint32_t undersized = 1 + (rand() % 8); // < 9
+                                memcpy(state->extradata.blocks[i].data + 24, &undersized, 4);
+                            }
                         }
+                    }
                     break;
                 case T_PROPSTORE_VAL_STR:
                         // ...
