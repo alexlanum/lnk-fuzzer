@@ -455,8 +455,6 @@ Individual ExtraData blocks have their own relationship to LinkFlags. Some block
 
 The parsing of the `PropertyStoreDataBlock` must be understood at a deep level.
 
-
-
 ### Windows Property System
 
 Windows doesn’t treat metadata as arbitrary key/value strings. It has a typed, schema-driven property system.
@@ -526,20 +524,35 @@ The last property set must have a Storage Size of 0 to terminate the property st
 
 The Serialized Property Storage structure is a variable-sized sequence of Serialized Property Value structures (property records):
 
-| Offset | Size | Value  | Description                                                  |
-| ------ | ---- | ------ | ------------------------------------------------------------ |
-| 0      | 4    |        | Size of the property set. Includes the 4 bytes of the size itself |
-| 4      | 4    | "1SPS" | Version (SPS version 1)                                      |
-| 8      | 16   |        | [Format ID](https://github.com/libyal/libfwps/blob/main/documentation/Windows Property Store format.asciidoc#format_class_identifiers) |
-| 24     | Var  |        | Zero or more Serialized Property Value structures            |
-| …      | 4    | 0      | Terminal identifier                                          |
+The property store payload layout in bytes:
+```
+BYTE 0  – [storage_size]    . 4  bytes: size of this whole storage
+BYTE 4  – [version]         . 4  bytes: must be "1SPS"
+BYTE 8  – [fmtid]           . 16 bytes: property set (determines naming scheme)
+```
+
+Integer-named values (`fmtid != D5CDD505-2E9C-101B-9397-08002B2CF9AE`):
+```
+BYTE 24 – [value_size]      . 4  bytes: size of this value entry (min 9)
+BYTE 28 – [property_id]     . 4  bytes: numeric PID
+BYTE 32 – [reserved]        . 1  byte:  must be 0x00
+BYTE 33 – [typed_value]     . variable: actual property data
+```
+
+String-named values (`fmtid == D5CDD505-2E9C-101B-9397-08002B2CF9AE`):
+```
+BYTE 24 – [value_size]      . 4  bytes: size of this value entry
+BYTE 28 – [name_size]       . 4  bytes: byte count of name string incl. null
+BYTE 32 – [reserved]        . 1  byte:  must be 0x00
+BYTE 33 – [name_string]     . variable: null-terminated Unicode property name
+BYTE ?? – [typed_value]     . variable: actual property data
+```
 
 One Serialized Property Storage structure corresponds to one FMTID. If a Property Store holds properties from multiple FMTIDs, there will consequently be multiple Serialized Property Storage entries.
 
 If the Format ID is `{D5CDD505-2E9C-101B-9397-08002B2CF9AE}`, all Serialized Property Values in the set must be "String Named". Otherwise, all values must be "Integer Named".
 
 The last Serialized Property Value in the set must have a Value Size of 0 to terminate the property set.
-
 
 
 The [Serialized Property Value (String Name)][https://winprotocoldoc.z19.web.core.windows.net/MS-PROPSTORE/%5bMS-PROPSTORE%5d.pdf#%5B%7B%22num%22%3A55%2C%22gen%22%3A0%7D%2C%7B%22name%22%3A%22XYZ%22%7D%2C69%2C181%2C0%5D] variable-sized structure specifies a single property within a serialized property set, where it is identified by a unique Unicode string:

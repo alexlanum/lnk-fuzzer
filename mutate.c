@@ -261,8 +261,7 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
         T_CNRL,
         T_EXTRA,
         T_PROPSTORE_STOR,
-        T_PROPSTORE_VAL_INT,
-        T_PROPSTORE_VAL_STR,
+        T_PROPSTORE_VAL,
         T_COUNT
     };
     int targets[T_COUNT];
@@ -274,8 +273,7 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
     if(layout->has_linkinfo && state->linkinfo.has_common_network_relative_link) targets[tcount++] = T_CNRL;
     if(layout->has_extradata && state->extradata.block_count > 0) targets[tcount++]                = T_EXTRA;
     if(layout->has_propstore_block) targets[tcount++]                                              = T_PROPSTORE_STOR;
-    if(layout->has_propstore_block) targets[tcount++]                                              = T_PROPSTORE_VAL_INT;
-    if(layout->has_propstore_block) targets[tcount++]                                              = T_PROPSTORE_VAL_STR;
+    if(layout->has_propstore_block) targets[tcount++]                                              = T_PROPSTORE_VAL;
 
     if(tcount == 0) return;
     int t = targets[rand() % tcount]; // choose a random valid field to mutate
@@ -284,44 +282,43 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
         case MUTATE_SIZE_ZERO:{
             switch(t){
                 case T_IDLIST:
-                    // total_size controls IDList allocation in ILCeate
-                    // [AV] IDListContainerIsConsistent check fail: parser continues with a failed PIDL
+                    // total_size controls IDList allocation in ILCreate
+                    // IDListContainerIsConsistent check fail: parser continues with a failed PIDL
                     state->linktargetidlist.total_size = 0;
                     break;
                 case T_LINKINFO:
-                    // [AV] LinkInfoSize < 4: allocation is skipped in LinkInfo_LoadFromStream
+                    // LinkInfoSize < 4: allocation is skipped in LinkInfo_LoadFromStream
                     state->linkinfo.link_info_size = 0;
                     break;
                 case T_VOLUMEID:
-                    // [AV] VolumeIDSize < 0x10: fails VolumeID check in IsValidLinkInfo
+                    // VolumeIDSize < 0x10: fails VolumeID check in IsValidLinkInfo
                     state->linkinfo.volume_id.volume_id_size = 0;
                     break;
                 case T_CNRL:
-                    // [AV] CNRL size < 0x14: early rejection, tests err path handling
-                    // [AV] CNRL size < 0x1C with unicode fields present: same
+                    // CNRL size < 0x14: early rejection, tests err path handling
                     state->linkinfo.common_network_relative_link.common_network_relative_link_size = 0;
                     break;
                 case T_EXTRA:
-                    // [AV] BlockSize < header size
+                    // BlockSize < header size
                     state->extradata.blocks[rand() % state->extradata.block_count].size = 0;
                     break;
                 case T_PROPSTORE_STOR:
-                    // [AV] storage_size = 0: terminates chunk walk early (while(chunkSize != 0))
+                    // storage_size = 0: terminates chunk walk early (while(chunkSize != 0))
                     for(int i = 0; i < state->extradata.block_count; i++)
                         if(state->extradata.blocks[i].type == EXTRA_PROPERTY_STORE && state->extradata.blocks[i].data)
                             memset(state->extradata.blocks[i].data, 0, 4);
                     break;
-                case T_PROPSTORE_VAL_INT:
-                    // [AV] value_size = 0: avoids serialized value walk (while(*(ULONG*)prop != 0))
-                    // falls through to the hash-table lookup backend instead, tests what happens to
-                    // code that expects the unfound property to exist if it wasn't found in hash-table
+                case T_PROPSTORE_VAL:
+                    // value_size = 0: terminates serialized value walk (while(*(ULONG*)prop != 0))
                     for(int i = 0; i < state->extradata.block_count; i++)
                         if(state->extradata.blocks[i].type == EXTRA_PROPERTY_STORE && state->extradata.blocks[i].data){
-                            
+                            uint32_t payload_len = state->extradata.blocks[i].size - 8;
+                            if(payload_len > 28) // ensure bytes 24-27 exist before writing
+                                memset(state->extradata.blocks[i].data + 24, 0, 4); // offset 24 is value_size
+                            break;
                         }
                     break;
-                case T_PROPSTORE_VAL_STR:
-                    // ...
+                default:
                     break;
             }
             break;
@@ -330,27 +327,27 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
         case MUTATE_SIZE_UNDERFLOW:{
             switch(t){
                 case T_LINKINFO:
-                    // [AV] LinkInfoSize not big enough to hold the size field (< 4)
+                    // LinkInfoSize not big enough to hold the size field (< 4)
                     state->linkinfo.link_info_size = rand() % 4;
                     break;
                 case T_VOLUMEID:
-                    // [AV] VolumeIDSize < 0x10: fails VolumeID check
+                    // VolumeIDSize < 0x10: fails VolumeID check
                     state->linkinfo.volume_id.volume_id_size = rand() % 0x10;
                     break;
                 case T_CNRL:
-                    // [AV] CNRL size must be >= 0x14    
+                    // CNRL size must be >= 0x14    
                     state->linkinfo.common_network_relative_link.common_network_relative_link_size = rand() % 0x14;
                     break;
                 case T_EXTRA:
-                    // [AV] BlockSize must be >= 8
+                    // BlockSize must be >= 8
                     state->extradata.blocks[rand() % state->extradata.block_count].size = rand() % 8;
                     break;
                 case T_IDLIST:
-                    // [AV] minimum total_size is 2 (only terminator, two zero bytes): 0 and 1 both underflow
+                    // minimum total_size is 2 (only terminator, two zero bytes): 0 and 1 both underflow
                     state->linktargetidlist.total_size = rand() % 2;
                     break;
                 case T_PROPSTORE_STOR:
-                    // [AV] storage_size must be > 24 (4 size + 4 version + 16 fmtid)
+                    // storage_size < 24 (4 size + 4 version + 16 fmtid)
                     for(int i = 0; i < state->extradata.block_count; i++)
                         if(state->extradata.blocks[i].type == EXTRA_PROPERTY_STORE && state->extradata.blocks[i].data){
                             uint32_t undersized = rand() % 24;
@@ -358,21 +355,19 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
                             break;
                         }
                     break;
-                case T_PROPSTORE_VAL_INT:
-                    // [AV] value_size > 0: accepted into serialized value walk even if too small to contain valid fields: walk proceeds with an undersized entry (size 1-8)
-                    // [AV] value_size < 9 (4 size + 4 pid + 1 reserved): tesst _GetPropertyStore check
+                case T_PROPSTORE_VAL:
+                    // value_size > 0 but < 9: enters serialized walk with undersized entry
                     for(int i = 0; i < state->extradata.block_count; i++){
                         if(state->extradata.blocks[i].type == EXTRA_PROPERTY_STORE && state->extradata.blocks[i].data){
                             uint32_t payload_len = state->extradata.blocks[i].size - 8;
-                            if(payload_len > 28){ // ensure there are at least 29 bytes in the payload to know 24-27 exist and can be safely written to
-                                uint32_t undersized = 1 + (rand() % 8); // < 9
+                            if(payload_len > 28){ // enough room for storage header + value_size
+                                uint32_t undersized = 1 + (rand() % 8);
                                 memcpy(state->extradata.blocks[i].data + 24, &undersized, 4);
                             }
+                            break;
                         }
                     }
                     break;
-                case T_PROPSTORE_VAL_STR:
-                        // ...
                 default:
                     break;
             }
@@ -382,11 +377,26 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
         case MUTATE_SIZE_DESYNC:{
             int delta = (rand() % 100) - 50;
             switch(t){
-                case T_LINKINFO: state->linkinfo.link_info_size += delta; break;
-                case T_VOLUMEID: state->linkinfo.volume_id.volume_id_size += delta; break;
-                case T_CNRL:     state->linkinfo.common_network_relative_link.common_network_relative_link_size += delta; break;
-                case T_IDLIST:   state->linktargetidlist.total_size += delta; break;
-                case T_EXTRA:    state->extradata.blocks[rand() % state->extradata.block_count].size += delta; break;
+                case T_LINKINFO:
+                    // size mismatch causes reads past LinkInfo into StringData/ExtraData bytes
+                    state->linkinfo.link_info_size += delta;
+                    break;
+                case T_VOLUMEID:
+                    // inflated size reads past VolumeID into LocalBasePath/CNRL bytes
+                    state->linkinfo.volume_id.volume_id_size += delta;
+                    break;
+                case T_CNRL:
+                    // misaligned jump lands in middle of CNRL strings, reads garbage as next field
+                    state->linkinfo.common_network_relative_link.common_network_relative_link_size += delta;
+                    break;
+                case T_IDLIST:
+                    // size/content mismatch: IDListContainerIsConsistent may accept but later walks read wrong
+                    state->linktargetidlist.total_size += delta;
+                    break;
+                case T_EXTRA:
+                    // wrong block size: next block header read from middle of current payload
+                    state->extradata.blocks[rand() % state->extradata.block_count].size += delta;
+                    break;
                 default: break;
             }
             break;
@@ -396,18 +406,23 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
             uint32_t val = boundaries[rand() % bcount];
             switch(t){
                 case T_IDLIST:
+                    // mismatch between declared size and actual PIDL items in IDListContainerIsConsistent
                     state->linktargetidlist.total_size = val;
                     break;
                 case T_LINKINFO:
+                    // < 4 skips alloc, < 0x1C fails IsValidLinkInfo, >= 0x1C reaches deep validation
                     state->linkinfo.link_info_size = val;
                     break;
                 case T_VOLUMEID:
+                    // < 0x10 fails size check, > remaining fails bounds check
                     state->linkinfo.volume_id.volume_id_size = val;
                     break;
                 case T_CNRL:
+                    // < 0x14 fails minimum check, triggers unicode field misparse
                     state->linkinfo.common_network_relative_link.common_network_relative_link_size = val;
                     break;
                 case T_EXTRA:
+                    // > 0xFFFF seeks backwards, < 8 terminates block loop
                     state->extradata.blocks[rand() % state->extradata.block_count].size = val;
                     break;
                 default:

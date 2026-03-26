@@ -305,7 +305,16 @@ typedef enum {
 typedef struct {
     uint32_t      size;
     ExtraDataType type;
-    uint8_t*      data; // raw bytes after signature
+    uint8_t*      data; // raw bytes after signature, layout:
+    /**
+     * BYTE 0  – [storage_size]  . 4  bytes: size of this whole storage
+     * BYTE 4  – [version]       . 4  bytes: must be "1SPS"
+     * BYTE 8  – [fmtid]         . 16 bytes: property set
+     * BYTE 24 – [value_size]    . 4  bytes: size of this value entry
+     * BYTE 28 – [property_id]   . 4  bytes: property
+     * BYTE 32 – [reserved]      . 1  byte
+     * BYTE 33 – [typed_value]   . variable: actual property data (ended by terminator) 
+     */
 } ExtraDataBlock;
 
 typedef struct {
@@ -386,11 +395,7 @@ static const uint8_t FMTID_STRING_NAMED[16] = {
      * If FormatID == this, all values in the store must be String Named.
      * If FormatID != this, all values must be Integer Named.
      */
-    0x05, 0xD5, 0xCD, 0xD5,
-    0x9C, 0x2E,
-    0x1B, 0x10,
-    0x93, 0x97,
-    0x08, 0x00, 0x2B, 0x2C, 0xF9, 0xAE
+    0x05, 0xD5, 0xCD, 0xD5, 0x9C, 0x2E, 0x1B, 0x10, 0x93, 0x97, 0x08, 0x00, 0x2B, 0x2C, 0xF9, 0xAE
 };
 
 typedef struct {
