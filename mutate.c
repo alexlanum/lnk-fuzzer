@@ -439,25 +439,48 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
     // operators manipulate shell items in the items[] array
     LinkTargetIDList* pidl = &state->linktargetidlist;
     switch(op){
-        case MUTATE_PIDL_REORDER_ITEM:
+        case MUTATE_PIDL_REORDER_ITEM:{
             // swap two random items: parent/child relationship breaks
+            if(pidl->item_count < 2) break;
+            int i = rand() % pidl->item_count;
+            int j;
+            do{
+                j = rand() % pidl->item_count;
+            } while(j == i);
+            ItemID tmp = pidl->items[i];
+            pidl->items[i] = pidl->items[j];
+            pidl->items[j] = tmp;
             break;
+        }
 
-        case MUTATE_PIDL_INSERT_ITEM:
+        case MUTATE_PIDL_INSERT_ITEM:{
+            // extra node in namespace walk: handler gets unexpected child
+            if(pidl->item_count >= MAX_PIDL_ITEMS) break;
+            int pos = rand() % (pidl->item_count + 1); // pick a random position anywhere in the list, this is where to insert
+            // shift items right to make space
+            for(int i = pidl->item_count; i > pos; i--)
+                pidl->items[i] = pidl->items[i - 1];
+
+            
             break;
+        }
 
-        case MUTATE_PIDL_REMOVE_ITEM:
+        case MUTATE_PIDL_REMOVE_ITEM:{
+            // shorter PIDL: namespace walk ends early, may skip expected nodes
             break;
+        }
 
-        case MUTATE_PIDL_DUPLICATE_ITEM:
+        case MUTATE_PIDL_DUPLICATE_ITEM:{
+            
             break;
+        }
 
-        case MUTATE_PIDL_PARENT_CHILD_MISMATCH:
+        case MUTATE_PIDL_PARENT_CHILD_MISMATCH:{
             // break parent/child relationship to confuse the namespace dispatch into misparsing payload bytes
             if(pidl->item_count < 2) break;
             
             // choose a child item (skip idx 0 to keep root valid so we reach namespace dispatch)
-            int i = 1 + (rand() % (pidl->item_count - 1));
+            int i = 1 + (rand() % (pidl->item_count - 1)); // 0 to item_count - 2, skips idx 0 (root item) to keep root valid
 
             // set to a class type that conflicts with parent namespace
             uint8_t types[] = { // only documented ones
@@ -469,17 +492,18 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
                 0x61,                               // URI
                 0x71,                               // control panel
             };
-            uint8_t parent_type = pidl->items[i - 1].class_type;
+            uint8_t parent_type = pidl->items[i - 1].class_type; // i - 1 is the parent
             uint8_t new_type;
             do{
                 new_type = types[rand() % 19];
             } while(new_type == parent_type); // ensure they are different
 
             pidl->items[i].class_type = new_type;
-            if(pidl->items[i].raw_len >= 3)
-                pidl->items[i].raw[2] = new_type;
+            if(pidl->items[i].raw_len >= 3) // ensure raw buffer is big enough to have a byte at index 2
+                pidl->items[i].raw[2] = new_type; // byte 0-1 are cb, byte 2 is abID[0] aka class type
             
             break;
+        }
 
         case MUTATE_PIDL_CHAIN_TRUNCATION:
             break;
