@@ -222,7 +222,28 @@ The share item structure only makes sense if the parent is a network server.
 The payload structure is defined by the Control Panel namespace handler.
 
 
+When Shell resolves a PIDL, it walks each item left to right, interpreting each item by the namespace handler of the item that came before it (the parent). Therefore the parent determines how the child is parsed.
+A real PIDL looks like this:
+```
+[Desktop 0x1F] -> [C: drive 0x2F] -> [Users folder 0x31] -> [file.txt 0x32]
+```
+In this case, Desktop is the root namespace. It knows how to interpret the next item in the list.
+It sees 0x2F and hands it to the filesystem volume handler. The handler sees 0x31 and hands it to the directory handler. The directory handler sees 0x32 and hands it to the file handler. 
 
+Each parent knows what child types are valid. A filesystem volume expects filesystem directories as children. A network resource expects network servers. A CLSID namespace item expects items that belong to that specific COM handler of the same GUID.
+For example, `CDesktopFolder::_GetFolderForItem` shows this behavior:
+```c
+type = pidl->mkid.abID[0];
+if((type & 0x78) == 0x38)
+    return m_pSpecialFolderFactory;  // special folder handler
+else
+    return m_pDefaultFolderFactory;  // default handler
+```
+The parent folder decides which handler processes the child based on the child's type byte. But deeper in the tree, a network folder handler is processing children; it expects network server items. If you put a filesystem directory item (0x31) as a child of a network resource (0x41), the network handler tries to interpret filesystem directory bytes as network data. It reads fields at offsets that mean one thing in a directory item and something completely different in a network item. This is precisely what `MUTATE_PIDL_PARENT_CHILD_MISMATCH` does; it changes a child's class type byte to something the parent handler does not expect, for instance:
+```
+[Desktop 0x1F] -> [C: drive 0x2F] -> [network share 0x46] <- wrong!
+```
+The volume handler gets an 0x46 child and either crashes, misparses, or dispatches to a handler that reads the payload with completely wrong assumptions about its layout. The bytes are structured as a filesystem item but are interpreted as a network item, meaning field boundaries are wrong, stringo ffsets land in the middle of integers, and size fields get read from arbitrary positions. Corrupting the relationship between items and their parents is a direct path to parser confusion.
 
 
 #### PIDL Resolution

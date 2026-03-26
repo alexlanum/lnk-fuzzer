@@ -243,7 +243,7 @@ static void apply_flags(MutationOperator op, LNKGeneratorState* state){
     }
 }
 
-// GROUP_SIZES mutation operators
+// GROUP_SIZES mutation operators, multiple fields targeted
 static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout* layout){
     uint32_t boundaries[] = {
         0, 1, 2, 3, 4, 0x0F, 0x10, 0x13, 0x14,
@@ -436,7 +436,53 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
 
 // GROUP_PIDL (LinkTargetIDList) mutation operators
 static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
+    // operators manipulate shell items in the items[] array
+    LinkTargetIDList* pidl = &state->linktargetidlist;
+    switch(op){
+        case MUTATE_PIDL_REORDER_ITEM:
+            // swap two random items: parent/child relationship breaks
+            break;
 
+        case MUTATE_PIDL_INSERT_ITEM:
+            break;
+
+        case MUTATE_PIDL_REMOVE_ITEM:
+            break;
+
+        case MUTATE_PIDL_DUPLICATE_ITEM:
+            break;
+
+        case MUTATE_PIDL_PARENT_CHILD_MISMATCH:
+            // parser confusion
+            break;
+
+        case MUTATE_PIDL_CHAIN_TRUNCATION:
+            break;
+
+        case MUTATE_PIDL_TOTAL_SIZE_DESYNC:
+            break;
+
+        case MUTATE_PIDL_CLASS_TYPE:
+            break;
+
+        case MUTATE_PIDL_DELEGATE_CLSID:
+            break;
+
+        case MUTATE_PIDL_MISSING_TERMINAL:
+            break;
+
+        case MUTATE_PIDL_NONZERO_TERMINAL:
+            break;
+
+        case MUTATE_PIDL_INNER_CB:
+            break;
+
+        case MUTATE_PIDL_DEPTH:
+            break;
+
+        default:
+            break;
+    }
 }
 
 // do mutation
