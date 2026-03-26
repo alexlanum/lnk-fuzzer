@@ -453,7 +453,32 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
             break;
 
         case MUTATE_PIDL_PARENT_CHILD_MISMATCH:
-            // parser confusion
+            // break parent/child relationship to confuse the namespace dispatch into misparsing payload bytes
+            if(pidl->item_count < 2) break;
+            
+            // choose a child item (skip idx 0 to keep root valid so we reach namespace dispatch)
+            int i = 1 + (rand() % (pidl->item_count - 1));
+
+            // set to a class type that conflicts with parent namespace
+            uint8_t types[] = { // only documented ones
+                0x1F,                               // root folder / CLSID
+                0x23, 0x25, 0x29, 0x2A, 0x2E, 0x2F, // volume variants (mask 0x70 == 0x20)
+                0x31, 0x32, 0x35, 0x36,             // file entry variants (mask 0x70 == 0x30)
+                0x41, 0x42, 0x46, 0x47, 0x4C,       // network location variants (mask 0x70 == 0x40)
+                0x52,                               // compressed folder
+                0x61,                               // URI
+                0x71,                               // control panel
+            };
+            uint8_t parent_type = pidl->items[i - 1].class_type;
+            uint8_t new_type;
+            do{
+                new_type = types[rand() % 19];
+            } while(new_type == parent_type); // ensure they are different
+
+            pidl->items[i].class_type = new_type;
+            if(pidl->items[i].raw_len >= 3)
+                pidl->items[i].raw[2] = new_type;
+            
             break;
 
         case MUTATE_PIDL_CHAIN_TRUNCATION:
