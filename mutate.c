@@ -483,19 +483,36 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
         }
 
         case MUTATE_PIDL_REMOVE_ITEM:{
-            // namespace walk ends early, may skip expected nodes
+            // remove a random item in the list, namespace walk is shorter, children lose their parent
             if(pidl->item_count <= 1) break;
             int idx = rand() % pidl->item_count;
             free(pidl->items[idx].raw);
             free(pidl->items[idx].payload);
-            for(int i = 0; i < pidl->item_count - 1; i++)
-                pidl->items[i] = pidl->items[i + 1];
+            // shift everything after the removed item to the left to fill the gap so the array is contiguous again
+            for(int i = idx; i < pidl->item_count - 1; i++) // shift items left starting at the gap
+                pidl->items[i] = pidl->items[i + 1]; // each item moves one position left
             pidl->item_count--;
             break;
         }
 
         case MUTATE_PIDL_DUPLICATE_ITEM:{
-            
+            // repeated namespace node, handler sees same ID twice
+            // RE shows the parser walks items sequentially
+            // duplicate items may confuse ref count or caching
+            // The duplicate is inserted at the end of the list rather than at a random
+            // position because random insertion would just test parent/child confusion
+            if(pidl->item_count < 1 || pidl->item_count >= MAX_PIDL_ITEMS) break;
+            int idx = rand() % pidl->item_count;
+            ItemID* src = &pidl->items[idx];
+            ItemID* dst = &pidl->items[pidl->item_count]; // end
+            *dst = *src; // get the struct fields
+            dst->raw = malloc(src->raw_len);
+            memcpy(dst->raw, src->raw, src->raw_len);
+            if(src->payload_len > 0){
+                dst->payload = malloc(src->payload_len);
+                memcpy(dst->payload, src->payload, src->payload_len);
+            }
+            pidl->item_count++;
             break;
         }
 
@@ -530,18 +547,82 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
         }
 
         case MUTATE_PIDL_CHAIN_TRUNCATION:{
+            // shorten an item's payload so the parser reads past the end of it, ex:
+            //  abID[0] = 0x1F (CLSID shell item)
+            //  Payload = TRUNCATED GUID
+            if(pidl->item_count < 1) break;
+            int idx = rand() % pidl->item_count;
+            ItemID* item = &pidl->items[idx];
+            if(item->payload_len <= 1) break; // ned at least 2 bytes of payload to have a range of possible truncation lengths
+            
+            // pick a new shorter payload_len
+            uint16_t new_len = rand() % item->payload_len;
+            item->payload_len = new_len; // truncate
+
+            // rebuild raw buffer to match
+            uint16_t new_cb = 2 + 1 + new_len; // cb + class_type + payload
+            free(item->raw);
+            item->raw = malloc(new_cb);
+            item->raw_len = new_cb;
+            memcpy(item->raw, &new_cb, 2);    // bytes 0-1 new cb
+            item->raw[2] = item->class_type;  // byte 2 class_type preserved
+            if(new_len > 0)
+                memcpy(item->raw + 3, item->payload, new_len); // truncated payload
+            item->size = new_cb;
             break;
         }
         
         case MUTATE_PIDL_TOTAL_SIZE_DESYNC:{
+            // make IDListSize field inconsistent with items
+            int r = rand() % 100;
+            if(r < 40){
+                // off-by-one: most likely to slip past validation
+                pidl->total_size += (rand() % 2 == 0) ? 1 : -1;
+            }else if(r < 70){
+                // small drift: +/- 8 bytes
+                pidl->total_size += (rand() % 16) - 8;
+            }else if(r < 80){
+                // large positive: big overallocation
+                pidl->total_size += 500 + (rand() % 1000);
+            }else if(r < 90){
+                // boundary values
+                uint16_t vals[] = {0, 1, 2, 0x7FFF, 0xFFFF};
+                pidl->total_size = vals[rand() % 5];
+            }else{
+                // zero: allocation skipped or fails
+                pidl->total_size = 0;
+            }
             break;
         }
         
         case MUTATE_PIDL_CLASS_TYPE:{
+            int idx = rand() % pidl->item_count;
+            ItemID* item = &pidl->items[idx];
+            // 70% random byte to test undocumented handlers
+            // 30% documented type to test known handlers with wrong payload
+            if(rand() % 100 < 70)
+                item->class_type = rand() & 0xFF;
+            else{
+                uint8_t types[] = { // only documented ones
+                    0x1F,                               // root folder / CLSID
+                    0x23, 0x25, 0x29, 0x2A, 0x2E, 0x2F, // volume variants (mask 0x70 == 0x20)
+                    0x31, 0x32, 0x35, 0x36,             // file entry variants (mask 0x70 == 0x30)
+                    0x41, 0x42, 0x46, 0x47, 0x4C,       // network location variants (mask 0x70 == 0x40)
+                    0x52,                               // compressed folder
+                    0x61,                               // URI
+                    0x71,                               // control panel
+                };
+                item->class_type = types[rand() % 19];
+            }
+            if(item->raw_len >= 3)
+                item->raw[2] = item->class_type;
             break;
         }
         
         case MUTATE_PIDL_DELEGATE_CLSID:{
+            // craft PIDLs that bypass recursive link detection (_IsTargetAnotherLink)
+            // hopefully trigger arbitrary COM loading
+
             break;
         }
 
