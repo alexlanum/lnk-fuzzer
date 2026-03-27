@@ -455,9 +455,11 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
 
         case MUTATE_PIDL_INSERT_ITEM:{
             // extra node in namespace walk: handler gets unexpected child
+            // example: [Desktop] -> [C: drive] -> [INSERTION] -> [Users folder] -> [file.txt]
             if(pidl->item_count >= MAX_PIDL_ITEMS) break;
-            int pos = rand() % (pidl->item_count + 1); // pick a random position anywhere in the list, this is where to insert
-            // shift items right to make space
+            int pos = rand() % (pidl->item_count + 1); // pick a random pos in the list, insert there
+            
+            // shift existing items right to make a gap for the insertion at the pos we want
             for(int i = pidl->item_count; i > pos; i--)
                 pidl->items[i] = pidl->items[i - 1];
 
@@ -505,29 +507,37 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
             break;
         }
 
-        case MUTATE_PIDL_CHAIN_TRUNCATION:
+        case MUTATE_PIDL_CHAIN_TRUNCATION:{
             break;
+        }
+        
+        case MUTATE_PIDL_TOTAL_SIZE_DESYNC:{
+            break;
+        }
+        
+        case MUTATE_PIDL_CLASS_TYPE:{
+            break;
+        }
+        
+        case MUTATE_PIDL_DELEGATE_CLSID:{
+            break;
+        }
 
-        case MUTATE_PIDL_TOTAL_SIZE_DESYNC:
+        case MUTATE_PIDL_MISSING_TERMINAL:{
             break;
+        }
 
-        case MUTATE_PIDL_CLASS_TYPE:
+        case MUTATE_PIDL_NONZERO_TERMINAL:{
             break;
+        }
 
-        case MUTATE_PIDL_DELEGATE_CLSID:
+        case MUTATE_PIDL_INNER_CB:{
             break;
+        }
 
-        case MUTATE_PIDL_MISSING_TERMINAL:
+        case MUTATE_PIDL_DEPTH:{
             break;
-
-        case MUTATE_PIDL_NONZERO_TERMINAL:
-            break;
-
-        case MUTATE_PIDL_INNER_CB:
-            break;
-
-        case MUTATE_PIDL_DEPTH:
-            break;
+        }
 
         default:
             break;
