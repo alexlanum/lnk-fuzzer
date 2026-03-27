@@ -3,7 +3,7 @@
 // Mutation operators
 #include "mutate.h"
 #include "model.h"
-#include <cstdint>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -463,12 +463,34 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
             for(int i = pidl->item_count; i > pos; i--)
                 pidl->items[i] = pidl->items[i - 1];
 
-            
+            // now that the position is free, build a minimal item there (random class type)
+            ItemID* item = &pidl->items[pos];
+            memset(item, 0, sizeof(ItemID));
+            item->size = 4;                   // cb = 4 (smallest valid: 2 cb + 1 class type + 1 byte)
+            item->class_type = rand() & 0xFF; // rndm class type
+            item->type = IDTYPE_UNKNOWN;
+            item->payload_len = 1;            // 1 byte of payload after class type
+            item->payload = malloc(1);
+            item->payload[0] = 0;
+            item->raw_len = 4;                // raw SHITEMID is 4 bytes total
+            item->raw = malloc(4);
+            uint16_t cb = 4;
+            memcpy(item->raw, &cb, 2);        // bytes 0-1 is cb
+            item->raw[2] = item->class_type;  // byte 2 is abID[0] (class type)
+            item->raw[3] = rand() & 0xFF;     // byte 3 is payload, random here, doesn't rly matter can be 0 or wateva
+            pidl->item_count++;               // +1 item in the list
             break;
         }
 
         case MUTATE_PIDL_REMOVE_ITEM:{
-            // shorter PIDL: namespace walk ends early, may skip expected nodes
+            // namespace walk ends early, may skip expected nodes
+            if(pidl->item_count <= 1) break;
+            int idx = rand() % pidl->item_count;
+            free(pidl->items[idx].raw);
+            free(pidl->items[idx].payload);
+            for(int i = 0; i < pidl->item_count - 1; i++)
+                pidl->items[i] = pidl->items[i + 1];
+            pidl->item_count--;
             break;
         }
 
