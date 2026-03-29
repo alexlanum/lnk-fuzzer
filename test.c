@@ -5,92 +5,61 @@
 
 int deserialize_lnk(const uint8_t* buf, size_t len, LNKGeneratorState* state);
 int serialize_lnk(uint8_t* buf, size_t cap, size_t* out_len, const LNKGeneratorState* state);
+void create_cpanel_lnk(void) {
+    LNKGeneratorState state;
+    memset(&state, 0, sizeof(state));
+
+    state.header.link_flags = 0x01;
+    state.header.show_command = 1;
+    state.core.has_link_target_idlist = 1;
+
+    LinkTargetIDList* pidl = &state.linktargetidlist;
+    pidl->item_count = 1;
+    pidl->has_terminal = 1;
+
+    // Control Panel CLSID: {21EC2020-3AEA-1069-A2DD-08002B30309D}
+    // Root folder SHITEMID layout:
+    //   [cb:2] [type:1] [sort_order:1] [GUID:16]
+    //   cb = 20, type = 0x1F, sort_order = 0x50
+    uint8_t raw_item[] = {
+        0x14, 0x00,             // cb = 20
+        0x1F,                   // class type
+        0x50,                   // sort order (0x50 = My Computer)
+        0x20, 0x20, 0xEC, 0x21, // GUID start
+        0xEA, 0x3A,
+        0x69, 0x10,
+        0xA2, 0xDD,
+        0x08, 0x00, 0x2B, 0x30, 0x30, 0x9D  // GUID end
+    };
+
+    ItemID* item = &pidl->items[0];
+    item->size = 20;
+    item->class_type = 0x1F;
+    item->type = IDTYPE_CLSID_ITEM;
+    item->payload_len = 17; // sort_order + GUID
+    item->payload = malloc(17);
+    memcpy(item->payload, raw_item + 2, 17);
+    item->raw_len = 20;
+    item->raw = malloc(20);
+    memcpy(item->raw, raw_item, 20);
+
+    uint8_t out[4096];
+    size_t out_len;
+    if (serialize_lnk(out, sizeof(out), &out_len, &state) < 0) {
+        printf("serialize failed\n");
+        return;
+    }
+
+    FILE* f = fopen("cpanel_test.lnk", "wb");
+    fwrite(out, 1, out_len, f);
+    fclose(f);
+    printf("wrote cpanel_test.lnk (%zu bytes)\n", out_len);
+
+    free(item->raw);
+    free(item->payload);
+}
 
 int main(void){
-    printf("starting\n");
-    fflush(stdout);
-    FILE* file = fopen("test.lnk", "rb");
-    if(!file){
-        printf("cant open file\n");
-        return 1;
-    }
-    
-    fseek(file, 0, SEEK_END);
-    size_t len = ftell(file);
-    fseek(file, 0, SEEK_SET);
-
-    uint8_t* buf = malloc(len);
-    fread(buf, 1, len, file);
-    fclose(file);
-
-    LNKGeneratorState state;
-    int result = deserialize_lnk(buf, len, &state);
-    if(result < 0)
-        printf("deserialize failed\n");
-    else
-        printf("deserialize ok\n");
-
-    // // print parsed fields
-    // if(result == 0){
-    //     printf("ok\n");
-    //     printf(">_ Header \n");
-    //     printf(" . link_flags:       0x%08X\n", state.header.link_flags);
-    //     printf(" . file_attributes:  0x%08X\n", state.header.file_attributes);
-    //     printf(" . file_size:        %u\n", state.header.file_size);
-    //     printf(" . show_command:     0x%08X\n", state.header.show_command);
-
-    //     printf("\n>_ Layout \n");
-    //     printf(" . has_idlist:       %d\n", state.core.has_link_target_idlist);
-    //     printf(" . has_linkinfo:     %d\n", state.core.has_linkinfo);
-    //     printf(" . has_stringdata:   %d\n", state.core.has_stringdata);
-    //     printf(" . has_extradata:    %d\n", state.core.has_extradata);
-
-    //     if(state.core.has_link_target_idlist){
-    //         printf("\n>_ IDList \n");
-    //         printf(" . total_size:       %u\n", state.linktargetidlist.total_size);
-    //         printf(" . item_count:       %d\n", state.linktargetidlist.item_count);
-    //         for (int i = 0; i < state.linktargetidlist.item_count; i++) {
-    //             printf("  item[%d]: cb=%u class=0x%02X type=%d\n",
-    //                 i, state.linktargetidlist.items[i].size,
-    //                 state.linktargetidlist.items[i].class_type,
-    //                 state.linktargetidlist.items[i].type);
-    //         }
-    //     }
-
-    //     if(state.core.has_linkinfo){
-    //         printf("\n>_ LinkInfo \n");
-    //         printf(" . link_info_size:   %u\n", state.linkinfo.link_info_size);
-    //         printf(" . header_size:      0x%X\n", state.linkinfo.link_info_header_size);
-    //         printf(" . flags:            0x%X\n", state.linkinfo.link_info_flags);
-    //         printf(" . has_volume_id:    %d\n", state.linkinfo.has_volume_id);
-    //         printf(" . has_cnrl:         %d\n", state.linkinfo.has_common_network_relative_link);
-    //         if(state.linkinfo.has_local_base_path)
-    //             printf(" . local_base_path:  %s\n", state.linkinfo.local_base_path);
-    //     }
-
-    //     if(state.core.has_extradata){
-    //         printf("\n>_ ExtraData \n");
-    //         printf(" . block_count:      %d\n", state.extradata.block_count);
-    //         for(int i = 0; i < state.extradata.block_count; i++){
-    //             printf("  block[%d]: size=%u type=%d\n",
-    //                 i, state.extradata.blocks[i].size,
-    //                 state.extradata.blocks[i].type);
-    //         }
-    //     }
-    // }
-
-    uint8_t out[65536];
-    size_t out_len;
-    int ser_result = serialize_lnk(out, sizeof(out), &out_len, &state);
-    if(ser_result < 0)
-        printf("serialize failed\n");
-
-    if(out_len == len && memcmp(buf, out, len) == 0)
-        printf("deserialize to serialize perfect match\n");
-    else
-        printf("deserialize to serialize mismatch (in=%zu out=%zu)\n", len, out_len);
-    
-    
-    free(buf);
+    create_cpanel_lnk();
     return 0;
 }

@@ -1375,114 +1375,76 @@ if ( IsIDListInNameSpace(*v2, &CLSID_NetworkPlaces) ) {
 }
 ```
 
-This check is done because if the PIDL inside this LNK points to another LNK file, and Explorer resolves it, the second LNK will be loaded and parsed too. If the second LNK points to a third LNK, that getss parsed too. An attack could therefore create a chain of LNK files pointing to eachother to cause an infinite recursion that crashes Explorer or overflows the stack. 
+The `_IsTargetAnotherLink` check is done because if the PIDL inside this LNK points to another LNK file, and Explorer resolves it, the second LNK will be loaded and parsed too. If the second LNK points to a third LNK, that gets parsed too. An attacker would therefore be able to create a chain of LNK files that point to eachother – causing infinite recursion that crashes Explorer or overflows the stack. 
 
-After rejection (`_IsTargetAnotherLink` success), the parser nulls the PIDL but continues parsing remaining sections (LinkInfo, etc.).
+After rejection (`_IsTargetAnotherLink 0`), the parser nulls the PIDL but continues parsing the remaining LNK sections.
 
-In `CShellLink::_Resolve`, when the PIDL is null (since we nulled it here):
+In `CShellLink::_Resolve` later, when the PIDL is null, the following occurs:
 
-1. `_ResolveIDList` receives null, returns `E_FAIL`
-2. `E_FAIL` doesn’t match any of the checked error codes
-3. Fall through to a second null check on the PIDL pointer
-4. Null PIDL sets `Path = 0` (`S_OK`) and jumps to `LABEL_100`
-5. Resolution reports SUCCESS with a null PIDL
+```c 
+v9 = CShellLink::_ResolveIDList( // receives null bc of earlier Pidl_Set(v2, 0)
+    (CShellLink*)a1, a2, *(const struct _ITEMIDLIST_ABSOLUTE**)(a1 + 376), v4
+); // will ret E_FAIL (-2147467259)
+Path = v9;
+if(
+   v9 >= 0 				// (success): no, -2147467259 is negative
+   || v9 == -2147023673	// no
+   || v9 == -2147023436	// no
+   || v9 == -2147024891	// no
+   || v9 == -2147024883	// no
+)
+```
 
-The caller (`ResolveAndInvoke`) sees a successful resolution but there’s not a target. If invocation proceeds without checking the PIDL pointer, this is a null pointer dereference or logic bug. `MUTATE_PIDL_DELEGATE_CLSID` can be leveraged here to craft a PIDL that triggers `_IsTargetAnotherLink` rejection, null the PIDL, then allow resolution to report false success to downstream invocation code. Also reachable via `MUTATE_PIDL_MISSING_TERMINAL` or any mutation that causes `_IsTargetAnotherLink` to return true. This is about tricking the resolution into reporting success when there's no valid target, causing a crash or a logic bug where code proceeds without a target (possibly skipping MOTW).
+None match `-2147467259`, so the `if` is FALSE and execution falls through to:
+
+```c
+v12 = *(const ITEMIDLIST**)(a1 + 376); // read PIDL pointer again
+if(!v12){ // PIDL is null (was nulled in _LoadIDList after _IsTargetAnotherLink)
+    Path = 0; // report SUCCESS despite having no target
+    goto LABEL_100;
+}
+
+...
+
+LABEL_100:
+  // caller (ResolveAndInvoke) will see Path = 0 (S_OK)
+  // and proceed to invocation with a null PIDL @ (this + 376)
+  if(!(unsigned int)CShellLink::IsDirty((CShellLink*)(a1 + 24)) && (v4 & 4) != 0){
+    if((unsigned int)CShellLink::_IsTargetAnotherLink((CShellLink*)a1))
+        CShellLink::_SetPidl((CShellLink*)a1, 0); // null the PIDL again
+    CShellLink::Save((CShellLink*)(a1 + 40), 0, 1); // save the link with null PIDL
+  }
+  return (unsigned int)Path; // ret 0 (SUCCESS) to caller with null PIDL xd
+```
+
+The caller (`ResolveAndInvoke`) sees a successful resolution but there’s not a target. If invocation proceeds without checking the PIDL pointer, this is a null pointer dereference or logic bug. The logic bug where code proceeds without a target may skip MOTW checks.
+
+The `MUTATE_PIDL_DELEGATE_CLSID` mutation operator is leveraged here to craft a PIDL that triggers `_IsTargetAnotherLink` rejection, gets nulled, and ultimately causes resolution to report false success to downstream invocation code. Also reachable via `MUTATE_PIDL_MISSING_TERMINAL` or any mutation that causes `_IsTargetAnotherLink` to return 0.
+
+
 
 > TODO: trace `ResolveAndInvoke`, see what happens when it receives `Path=0` with a null PIDL at `this + 376`.
 
 
 
+Separately, `_IsTargetAnotherLink` can be bypassed entirely. The check only tests whether the PIDL resolves to a `.lnk` file. A CLSID item (`0x1F`) with a GUID pointing to a COM handler (Control Panel, Shell extensions, etc.) is not a `.lnk` file, so it passes the check and reaches namespace resolution.
 
+**worked** – I crafted a `.lnk` with a single PIDL item:
 
-
-
-##### Arbitrary COM loading
-Arbitrary COM loading occurs when an attacker controls a CLSID value that the Shell uses to instantiate a COM object. The Shell reads the CLSID, looks it up in the registry, loads the corresponding DLL, and creates the COM object. Controlling the CLSID allows the attacker to influence which code is loaded and executed by the Shell. These COM objects are designed to allow the host application (such as Explorer or Control Panel) to render UI and handle user interactions.
-
-Stuxnet exploited arbitrary COM loading through LNK shell items. A crafted PIDL contained a CLSID shell item (`0x1F`) pointing to the Control Panel namespace. When Explorer displayed the folder containing the LNK (no click needed, just view), the Shell walked the PIDL and hit the Control Panel CLSID, causing it to load `CControlPanelFolder` and call `CPL_LoadCPLModule`, which loaded an attacker-controlled DLL from a USB drive. The Shell was designed to load CPL modules for Control Panel applets (`.cpl` files), but did not expect an attack to construct a PIDL that pointed there from an LNK file.
-
-Common Control Panel applets:
-- `appwiz.cpl` – Programs and Features
-- `inetcpl.cpl` – Internet Options
-- `timedate.cpl` – Date and Time
-These are DLLs with a different file extension that have a required entry point (`CPlApplet`). They are loaded via `LoadLibrary` and are nearly identical to DLLs. Windows doesn't see them as an exotic format, rather, it simply uses the `.cpl` extension as a signal that it is a DLL which implements the Control Panel applet interface.
-
-CVE-2017-8464 arose from an incomplete fix for the original Stuxnet vuln. Windows could be coerced into loading a Control Panel applet (`.cpl`, a DLL) simply by rendering a malicious shortcut, due to implicit trust in a CLSID embedded within the LNK’s PIDL.
-To mitigate Stuxnet, Microsoft added `_IsRegisteredCPLApplet` to restrict loading to a whitelist of approved Control Panel applets (`.cpl` files). This check could be bypassed by including a `SpecialFolderDataBlock` in the LNK’s ExtraData specifically with a folder ID corresponding to the Control Panel. The Shell interpreted the shortcut within the Control Panel namespace.
-This subtle context shift caused the check to be skipped, allowing execution to reach `CPL_LoadCPLModule` with an attacker-controlled path, effectively restoring arbitrary `.cpl` loading under the privileges of the Control Panel context.
-
-[CVE-2026-21509][https://orca.security/resources/blog/cve-2026-21509-microsoft-office-zero-day-exploit/] showed the same pattern in Office. When Office sees a CLSID in a document, it knows which component to load. There exists a mechanism called "kill bits" in the registry – these bits are set by administrators when a COM object is deemed dangerous. Kill bits prevent the COM object from ever being instantiated. An attacker crafted a document that bypassed the kill bit check, loading `Shell.Explorer.1`, which is an embedded Internet Explorer control that. could execute scripts and connect to remote servers.
-
-In the check:
-```c
-if ((unsigned int)CShellLink::_IsTargetAnotherLink((CShellLink *)this))
-    v4 = -2147467259; // reject
 ```
-Recursive link loading is prevented, meaning a shortcut to a shortcut (which would chain indefinitely) won't be able to occur. This can be bypassed via `MUTATE_PIDL_DELEGATE_CLSID` because injecting a CLSID item (`0x1F`) with a random GUID for instance would not fall under such a check.
+Item: 		0x1F
+Sort order: 0x50
+GUID:		{21EC2020-3AEA-1069-A2DD-08002B30309D} (Control Panel)
+```
 
-`_IsTargetAnotherLink` tests whether the target is another `.lnk` file, but a CLSID item pointing to Control Panel or soe COM handler isn't a `.lnk` file at all, so it passes the check.
+Explorer displayed the Control Panel icon without any click or interaction. This proves the CLSID reached `_GetFolderForItem`, the COM factory loaded the Control Panel handler DLL, and its `IShellFolder` implementation executed in Explorer's process.
 
-After passing the check, the PIDL reaches namespace resolution.
-For non-network PIDLs, `CDesktopFolder::_GetFolderForItem` dispatches
-based on the type byte. It asks a COM factory to create a handler
-object for the CLSID embedded in the shell item. A factory is a COM
-object that looks up the CLSID in the registry, loads the corresponding
-DLL, and returns a live object implementing `IShellFolder`. The Shell
-then calls methods on that object (`BindToObject`, `ParseDisplayName`)
-with the remaining PIDL data.
+This is the same dispatch path exploited by Stuxnet and CVE-2017-8464. Microsoft patched specific CLSIDs (CPL whitelist kill bits) but the underlying mechanism of an attacker-controlled CLSID in a Shell Item triggering a COM handler to be loaded upon folder view is still functional.
 
-Since the attacker controls the CLSID, they control which DLL gets
-loaded and which `IShellFolder` implementation processes the PIDL.
-This is the same mechanism exploited by CVE-2010-2568 (Stuxnet),
-where a Control Panel CLSID caused `CPL_LoadCPLModule` to load
-an arbitrary DLL, and CVE-2017-8464, where a `SpecialFolderDataBlock`
-bypassed the CPL whitelist added after Stuxnet. CVE-2026-21509
-demonstrated the same pattern in Office, bypassing COM kill-bit
-protections to load `Shell.Explorer.1`.
-
-`MUTATE_PIDL_DELEGATE_CLSID` automates this search by injecting
-random CLSIDs and letting coverage feedback reveal which registered
-COM objects expose exploitable behavior when loaded through the
-shell item path.
+`MUTATE_PIDL_DELEGATE_CLSID` automates this by injecting `0x1F` items with sort order byte and random GUIDs. The sort order byte at offset 3 is required; without it, the GUID is misaligned and
+the Shell can't match it to a registered handler. Each of the hundreds of registered COM objects on Windows becomes a fuzz target. A crash in any handler's `BindToObject` or `ParseDisplayName` when processing malformed PIDL payload data is a potential CVE.
 
 
-Separately, `_IsTargetAnotherLink` can be bypassed entirely.
-The check only tests whether the PIDL resolves to a `.lnk` file.
-A CLSID item (`0x1F`) with a GUID pointing to a COM handler
-(Control Panel, Shell extensions, etc.) is not a `.lnk` file,
-so it passes the check and reaches namespace resolution.
-
-For non-network PIDLs, `CDesktopFolder::_GetFolderForItem`
-dispatches based on the type byte and asks a COM factory to
-create a handler object for the CLSID embedded in the shell
-item. The factory looks up the CLSID in the registry, loads
-the corresponding DLL, and returns a live `IShellFolder` object.
-The Shell then calls methods on it (`BindToObject`,
-`ParseDisplayName`) with the remaining PIDL data. Since the
-attacker controls the CLSID, they control which DLL gets loaded
-and which handler processes the PIDL.
-
-This is the mechanism exploited by:
-- CVE-2010-2568 (Stuxnet): PIDL with Control Panel CLSID caused
-  `CPL_LoadCPLModule` to load an attacker DLL during icon display.
-  No click required — just viewing the folder triggered it.
-- CVE-2017-8464: `SpecialFolderDataBlock` with Control Panel
-  folder ID bypassed the CPL whitelist added after Stuxnet,
-  reaching `CPL_LoadCPLModule` again.
-- CVE-2026-21509: Office failed to validate COM kill bits,
-  loading `Shell.Explorer.1` which executed scripts.
-
-For network PIDLs, the re-parse path is also reachable:
-`SHCreateItemFromIDList` → `GetDisplayName` → `SHParseDisplayName`
-Two different parsers interpret the same data. If the display
-name can be crafted to resolve differently on re-parse, the
-replacement PIDL could point to an unintended target.
-
-`MUTATE_PIDL_DELEGATE_CLSID` targets this by injecting `0x1F`
-items with random GUIDs. Each registered COM object on the
-system is a potential target that was never tested with
-malformed shell item payloads.
 
 
 PIDL deserialization `ILLoadFromStreamEx`:
