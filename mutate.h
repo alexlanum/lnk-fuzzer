@@ -80,10 +80,10 @@ typedef enum {
 
     // ExtraData block header
     MUTATE_BLOCK_SIZE_ZERO,
-    MUTATE_BLOCK_SIZE_UNDERFLOW,        // < 8, smaller than header
-    MUTATE_BLOCK_SIZE_OVERFLOW,         // extends into next block
-    MUTATE_BLOCK_SIGNATURE_UNKNOWN,     // unrecognized signature
-    MUTATE_BLOCK_SIGNATURE_WRONG,       // valid signature on wrong block type
+    MUTATE_BLOCK_SIZE_UNDERFLOW,                // < 8, smaller than header
+    MUTATE_BLOCK_SIZE_OVERFLOW,                 // extends into next block
+    MUTATE_BLOCK_SIGNATURE_UNKNOWN,             // unrecognized signature
+    MUTATE_BLOCK_SIGNATURE_WRONG,               // valid signature on wrong block type
 
     // PropertyStore — storage level
     MUTATE_PROPSTORE_STORAGE_SIZE_ZERO,         // treated as terminator — early exit
