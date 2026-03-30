@@ -134,6 +134,12 @@ typedef enum {
     MUTATE_KNOWNFOLDER_GUID_ZERO,               // all-zero GUID
     MUTATE_KNOWNFOLDER_OFFSET_OOB,              // offset past end of IDList
 
+    // SpecialFolder
+    MUTATE_SPECIALFOLDER_CSIDL,                 // SpecialFolderID to interesting CSIDL values
+    MUTATE_SPECIALFOLDER_RANDOM,                // SpecialFolderID to random integer
+    MUTATE_SPECIALFOLDER_OFFSET,                // corrupt the first child segment offset
+    MUTATE_SPECIALFOLDER_INJECT,                // inject a SpecialFolderDataBlock into a file that doesn't have one
+    
     // File
     MUTATE_FILE_TRUNCATE,
     MUTATE_FILE_APPEND_GARBAGE,

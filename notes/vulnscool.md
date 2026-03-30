@@ -107,6 +107,12 @@ The whitelist check from the Stuxnet patch was incomplete. An attacker could sti
 Microsoft patched this by tightening the path validation logic.
 
 
-
 # CVE-2017-8464
 
+The ExtraData section contained a `SpecialFolderDataBlock` which had a `SpecialFolderID = 3` (`CSIDL_CONTROLS`), which forced namespace resolution through the Control Panel handler, bypassing the CPL whitelist.
+
+Specifically, the first child segment offset pointed to the `SHITEMID` in the LinkTargetIDList PIDL that contained the CPL path. The `SpecialFolderDataBlock` caused the Shell to think the item belonged to Control Panel, which changed resolution context and bypassed the whitelist.
+
+The `SpecialFolderDataBlock` set `CSIDL_CONTROLS`and the `KnownFolderDataBlock` set the Control Panel `KNOWNFOLDERID` GUID. Both pointed to Control Panel to reinforce the namespace context switch.
+
+Microsoft fixed this by hardening ExtraData block processing.

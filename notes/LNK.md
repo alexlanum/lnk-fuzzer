@@ -953,7 +953,46 @@ typedef struct tagPROPVARIANT {
 ```
 
 
+### SpecialFolderDataBlock
+```
+BlockSize                   0x00000010
+BlockSignature              0xa0000005
+SpecialFolderID
+First child segment offset
+```
 
+The "first child segment offset" is just an index into the PIDL that tells the Shell which shell item in the LinkTargetIDList the special folder refers to. So it is just an offset into the PIDL.
+
+CSIDL (Constant Special Item ID List) values:
+```
+CSIDL_DESKTOP              = 0  (0x00)  — Desktop
+CSIDL_INTERNET             = 1  (0x01)  — Internet Explorer
+CSIDL_PROGRAMS             = 2  (0x02)  — Start Menu\Programs
+CSIDL_CONTROLS             = 3  (0x03)  — Control Panel (see CVE-2017-8464)
+CSIDL_PRINTERS             = 4  (0x04)  — Printers
+CSIDL_PERSONAL             = 5  (0x05)  — My Documents
+CSIDL_FAVORITES            = 6  (0x06)  — Favorites
+CSIDL_STARTUP              = 7  (0x07)  — Startup folder
+CSIDL_RECENT               = 8  (0x08)  — Recent documents
+CSIDL_SENDTO               = 9  (0x09)  — SendTo
+CSIDL_BITBUCKET            = 10 (0x0A)  — Recycle Bin
+CSIDL_STARTMENU            = 11 (0x0B)  — Start Menu
+CSIDL_DESKTOPDIRECTORY     = 16 (0x10)  — Desktop directory
+CSIDL_DRIVES               = 17 (0x11)  — My Computer
+CSIDL_NETWORK              = 18 (0x12)  — Network Neighborhood
+CSIDL_NETHOOD              = 19 (0x13)  — NetHood
+CSIDL_FONTS                = 20 (0x14)  — Fonts
+CSIDL_SYSTEM               = 37 (0x25)  — System32
+CSIDL_WINDOWS              = 36 (0x24)  — Windows directory
+CSIDL_CONNECTIONS          = 49 (0x31)  — Network Connections
+CSIDL_COMPUTERSNEARME      = 61 (0x3D)  — Computers Near Me
+```
+
+Injecting a `SpecialFolderDataBlock` with different CSIDL values forces different namespace invocations. Each one routes resolution through a different handler.
+`MUTATE_SPECIALFOLDER_CSIDL` sets the folder ID to known values like `CSIDL_CONTROLS` (3) to force namespace context switches.
+`MUTATE_SPECIALFOLDER_CSIDL_RANDOM` tests what happens with undocumented / invalid CSIDLs.
+`MUTATE_SPECIALFOLDER_OFFSET` sets the child segment offset to the wrong `SHITEMID` to see if the Shell will reinterpret arbitrary PIDL bytes through whatever namespace the folder ID specifies. For instance, the Control Panel handler might read filesystem directory bytes as a CPL descriptor.
+`MUTATE_SPECIALFOLDER_INJECT` does what CVE-2017-8464 did, adding an ExtraDataBlock to change resolution behavior.
 
 
 ## Resolution
