@@ -101,6 +101,7 @@ typedef struct {
     ItemID   items[MAX_PIDL_ITEMS]; // the order of items[] defines the namespace traversal
     int      item_count;
     int      has_terminal;
+    uint16_t terminal_value; // 0 = normal, non-zero = malformed
 } LinkTargetIDList;
 
 /**

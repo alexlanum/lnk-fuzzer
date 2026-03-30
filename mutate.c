@@ -625,17 +625,41 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
         }
         
         case MUTATE_PIDL_DELEGATE_CLSID:{
-            // craft PIDLs that bypass recursive link detection (_IsTargetAnotherLink)
-            // hopefully trigger arbitrary COM loading
-
+            if(pidl->item_count >= MAX_PIDL_ITEMS || pidl->item_count < 1) break;
+            // arbtrary COM load via CLSID injection
+            // 0x1f (root folder item) with a random GUID. Since this is not a .lnk file, it
+            // bypasses the _IsTargetAnotherLink check in _LoadIDList and reaches namespace dispatch
+            ItemID* item = &pidl->items[pidl->item_count];
+            memset(item, 0, sizeof(ItemID));      // space for new item
+            item->size = 20;                      // cb + class_type + sort order + GUID
+            item->class_type = 0x1F;              // first byte of payload
+            item->type = IDTYPE_CLSID_ITEM;
+            item->payload_len = 17;               // sort order (1), GUID (16)
+            item->payload = malloc(17);
+            item->payload[0] = rand() & 0xFF;     // random sort order
+            for(int i = 0; i < 16; i++)
+                item->payload[1 + i] = rand() & 0xFF; // random GUID
+            item->raw_len = 20;
+            item->raw = malloc(20);
+            uint16_t cb = 20;
+            memcpy(item->raw, &cb, 2);                    // cb
+            item->raw[2] = 0x1F;                          // class type
+            item->raw[3] = item->payload[0];              // sort order
+            memcpy(item->raw + 4, item->payload + 1, 16); // GUID
+            pidl->item_count++;
             break;
         }
 
         case MUTATE_PIDL_MISSING_TERMINAL:{
+            pidl->has_terminal = 0;
             break;
         }
 
         case MUTATE_PIDL_NONZERO_TERMINAL:{
+            // terminal is typically cb=0. A non-zero terminal might make the walker
+            // think there is another item and read past the real end of IDList
+            pidl->has_terminal = 1;
+            pidl->terminal_value = 1 + (rand() % 10); // small non-zero cb
             break;
         }
 

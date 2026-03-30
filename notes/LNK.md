@@ -63,9 +63,9 @@ For these types of Shell objects, the Shell navigates a sequences of Shell Item 
 ```c
 typedef struct _SHITEMID {
     USHORT cb;      // size of this item including cb. determines where next item begins.
-    BYTE   abID[1]; // variable-length shell item data (type-specific payload)
+    BYTE   abID[];  // variable-length shell item data (type-specific payload)
     				// first byte (abID[0]) is the class type indicator
-    				// everything after is data following that class type
+    				// everything after is data formatted according to the class type
 } SHITEMID;
 
 typedef struct _ITEMIDLIST {
@@ -79,8 +79,8 @@ typedef struct _ITEMIDLIST {
 ```
 Offset  Size  Field
 0x00    2     cb
-0x02    1     abID[0] – first payload byte (class type byte)
-0x03    ...   abID[?] – rest of payload
+0x02    1     abID[0]    – first payload byte (class type byte)
+0x03    ?     abID[1]    – rest of payload
 ```
 
 The class type indicator is not infallible; some items don't use the type byte for dispatch, rather, they contain a GUID inside the payload to identifiy the shell namespace object that the parser can read instead to determine the type.
@@ -88,9 +88,10 @@ The class type indicator is not infallible; some items don't use the type byte f
 Example of a CLSID embedded inside a shell item:
 
 ```
-14 00				– SHITEMID.cb
-1F					– type 0x1F (CLSID-based shell item)
-50 E0 4F D0 ...		– CLSID_ShellDesktop GUID in payload
+14 00              – SHITEMID.cb = 20
+1F                 – abID[0] = 0x1F (CLSID-based shell item)
+50                 – abID[1] = sort order (0x50 = My Computer)
+E0 4F D0 20 ...    – abID[2..17] = CLSID GUID (16 bytes)
 ```
 
 In this case, the embedded GUID identifies the namespace object. The shell reads the CLSID and loads the corresponding COM namespace handler responsible for that object (ex. Desktop, Control Panel, etc.).
@@ -149,27 +150,28 @@ LinkTargetIDList
 
 Each type byte hits different shell folder implementations. Fuzzing them will reach different attack surfaces.
 
-Fuzzing should also test mismatches between structures, for example:
-
+The payload after `abID[0]` is formatted differently depending on the class type:
 ```
-[SHITEMID]
-abID[0] = 0x1F        – CLSID shell item
-Payload = MALFORMED OR TRUNCATED GUID
+0x1F (root/CLSID):
+    abID[1]     = sort order (0x50 = My Computer, 0x58 = Network, etc.)
+    abID[2..17] = CLSID GUID (16 bytes)
 
-[SHITEMID]
-abID[0] = 0x31        – Directory shell item
-Payload = CLSID GUID
+0x2F (volume):
+    abID[1]     = volume flags (drive type, has name, removable, etc.)
+    abID[2..]   = volume name string, drive letter
 
-[SHITEMID]
-abID[0] = 0x31        – Directory shell item
-Payload = FILENAME WITH LENGTH FIELD EXCEEDING ITEM SIZE
+0x31/0x32 (file entry):
+    abID[1]     = unknown (possibly file size low byte)
+    abID[2..5]  = file size (4 bytes)
+    abID[6..9]  = modification date/time
+    abID[10]    = file attributes (FILE_ATTRIBUTE_*)
+    abID[11..]  = short filename string
 
-[SHITEMID]
-abID[0] = 0x2F        – Volume shell item (C:)
-[SHITEMID]
-abID[0] = 0x41        – Network shell item
-Payload = \\server\share
+0x41/0x42/0x46 (network):
+    abID[1]     = network item flags
+    abID[2..]   = network name string (\\server or \\server\share)
 ```
+There is no universal layout for `abID[1..]`. The class type byte at `abID[0]` determines how every following byte is to be interpreted. This is why `MUTATE_PIDL_PARENT_CHILD_MISMATCH` exists: swapping a child class type causes the parent handler to read the payload using the wrong layout, misinterpreting every field.
 
 The class type indicator is not always sufficient for determining the shell item format. Some shell items require additional inspection of the payload (such as embedded CLSIDs or structure signatures), and in certain cases the interpretation depends on the parent namespace context.
 
@@ -1483,8 +1485,27 @@ This is the same dispatch path exploited by Stuxnet and CVE-2017-8464. Microsoft
 `MUTATE_PIDL_DELEGATE_CLSID` automates this by injecting `0x1F` items with sort order byte and random GUIDs. The sort order byte at offset 3 is required; without it, the GUID is misaligned and
 the Shell can't match it to a registered handler. Each of the hundreds of registered COM objects on Windows becomes a fuzz target. A crash in any handler's `BindToObject` or `ParseDisplayName` when processing malformed PIDL payload data is a potential CVE.
 
-
-
+Root folder `SHITEMID` binary layout (20 bytes total):
+```
+Offset  Size  Field
+0x00    2     cb = 20         (size of this SHITEMID)
+0x02    1     abID[0] = 0x1F  (class type)
+0x03    1     abID[1]         (sort order, ex. 0x50)
+0x04    16    abID[2..17]     (GUID, 16 bytes)
+```
+Sort order values for root folder items mapped to specific namespaces:
+```
+0x00 — Internet Explorer
+0x42 — Libraries
+0x44 — Users
+0x48 — My Documents
+0x50 — My Computer
+0x58 — My Network Places
+0x60 — Recycle Bin
+0x68 — Internet Explorer
+0x70 — Unknown
+0x80 — My Games
+```
 
 PIDL deserialization `ILLoadFromStreamEx`:
 
