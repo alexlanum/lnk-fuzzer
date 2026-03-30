@@ -24,6 +24,7 @@ typedef enum {
     GROUP_DARWIN,                       // DarwinDataBlock payload
     GROUP_TRACKER,                      // TrackerDataBlock payload
     GROUP_KNOWNFOLDER,                  // KnownFolderDataBlock
+    GROUP_SPECIALFOLDER,                // SpecialFolderDataBlock
     GROUP_FILE,                         // whole-file mutations
     GROUP_COUNT
 } MutationOperatorGroup;

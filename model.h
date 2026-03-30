@@ -305,7 +305,7 @@ typedef enum {
 typedef struct {
     uint32_t      size;
     ExtraDataType type;
-    uint8_t*      data; // raw bytes after signature, layout:
+    uint8_t*      data; // raw bytes after signature
     /**
      * BYTE 0  – [storage_size]  . 4  bytes: size of this whole storage
      * BYTE 4  – [version]       . 4  bytes: must be "1SPS"
