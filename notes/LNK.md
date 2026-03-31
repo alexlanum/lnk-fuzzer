@@ -83,7 +83,7 @@ Offset  Size  Field
 0x03    ?     abID[1]    – rest of payload
 ```
 
-The class type indicator is not infallible; some items don't use the type byte for dispatch, rather, they contain a GUID inside the payload to identifiy the shell namespace object that the parser can read instead to determine the type.
+The class type indicator is not infallible; some items don't use the type byte for dispatch, rather, they contain a GUID inside the payload to identifiy the shell namespace object that the parser can read instead to determine the type. These are signature-based items – where `abID[0]` isn't enough for the parser.
 
 Example of a CLSID embedded inside a shell item:
 
@@ -193,7 +193,31 @@ if certain flags / offsets match expected values
 
 In these cases the shell item structure is recognized by matching characteristic values or layout patterns within the payload rather than relying on the class type indicator byte. This approach is called signature-based identification.
 
+##### Delegate items
 
+One peculiar case is that of delegate items (see [Geoff Chappell's reverse engineering of SHELL32's RegFolder class][https://www.geoffchappell.com/studies/windows/shell/shell32/classes/regfolder.htm]).
+
+A delegate folder is a way for third-party software to inject items into existing Shell folders without replacing the entire folder implementation. For example, Desktop is implemented by `CDesktopFolder`. Typically only Microsoft controls what appears there, but delegate folders allow other software to register items that appear inside the Desktop as if they belong there – things like Dropbox or Google Drive icons that show up alongside My Computer and Recycle Bin.
+
+The mechanism works through the registry:
+```
+HKLM\...\Explorer\CommonPlaces\NameSpace\DelegateFolders\{some-CLSID}
+```
+When `CDesktopFolder` enumerates its items, it checks the `DelegateFolders` subkey, loads each registered CLSID as a COM object, and merges those items into its own namespace. The delegate's items appear inside the Desktop but are processed by the delegate's own COM handler, not by `CDesktopFolder`. The [DELEGATEITEMID][https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/ns-shobjidl_core-delegateitemid] format exists to distinguish these injected items from the folder's own items. The marker CLSID (`{5E591A74-...}`) tells `RegFolder` "this item doesn't belong to me, hand it to the delegate COM handler identified by the second CLSID." Without that marker, `RegFolder` would try to parse the item using its own format and misinterpret the bytes.
+
+Delegate folders are an interesting fuzz target because they add a layer of COM dispatch indirection. The parent folder loads a CLSID, creates a COM object, and gives it data. Corrupting the delegate CLSID or the marker CLSID would test what happens when this handoff goes wrong.
+
+A delegate shell item is a `SHITEMID` structure that has a sub-item embedded inside its `abID[]` payload. The delegate item structure (inner cb, inner payload, delegate CLSID) is how the bytes inside `abID[]` are laid out for the particular class type.
+How this looks in memory:
+```
+Offset  Size  Field                     Desc
+0x00    2     cb                        size of entire item
+0x02    2     folder class identifier   same as parent
+0x04    2     outer data size           size of delegate folder's data
+0x06    var   outer data                delegate folder's data for item
+var     16    GUID                      delegate folder marker CLSID
+var     16    delegate item CLSID       identifies COM handler for this item
+```
 
 #### Shell Item Ancestors
 

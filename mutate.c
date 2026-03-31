@@ -529,19 +529,22 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
             int i = 1 + (rand() % (pidl->item_count - 1)); // 0 to item_count - 2, skips idx 0 (root item) to keep root valid
 
             // set to a class type that conflicts with parent namespace
-            uint8_t types[] = { // only documented ones
-                0x1F,                               // root folder / CLSID
-                0x23, 0x25, 0x29, 0x2A, 0x2E, 0x2F, // volume variants (mask 0x70 == 0x20)
-                0x31, 0x32, 0x35, 0x36,             // file entry variants (mask 0x70 == 0x30)
-                0x41, 0x42, 0x46, 0x47, 0x4C,       // network location variants (mask 0x70 == 0x40)
-                0x52,                               // compressed folder
-                0x61,                               // URI
-                0x71,                               // control panel
+            uint8_t types[] = { // https://www.geoffchappell.com/studies/windows/shell/shell32/classes/regfolder.htm
+                0x1F,                                     // root folder / CLSID
+                0x23, 0x25, 0x29, 0x2A, 0x2E, 0x2F,       // volume variants (mask 0x70 == 0x20)
+                0x31, 0x32, 0x35, 0x36,                   // file entry variants (mask 0x70 == 0x30)
+                0x41, 0x42, 0x46, 0x47, 0x4C, 0x4D, 0x4E, // network location variants (mask 0x70 == 0x40)
+                0x52,                                     // compressed folder
+                0x61,                                     // URI
+                0x70, 0x71,                               // control panel
+                0x72,                                     // printers
+                0x73,                                     // CommonPlacesFolder
+                0x74,                                     // UsersFilesFolder
             };
             uint8_t parent_type = pidl->items[i - 1].class_type; // i - 1 is the parent
             uint8_t new_type;
             do{
-                new_type = types[rand() % 19];
+                new_type = types[rand() % (sizeof(types) / sizeof(types[0]))];
             } while(new_type == parent_type); // ensure they are different
 
             pidl->items[i].class_type = new_type;
@@ -608,16 +611,19 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
             if(rand() % 100 < 70)
                 item->class_type = rand() & 0xFF;
             else{
-                uint8_t types[] = { // only documented ones
-                    0x1F,                               // root folder / CLSID
-                    0x23, 0x25, 0x29, 0x2A, 0x2E, 0x2F, // volume variants (mask 0x70 == 0x20)
-                    0x31, 0x32, 0x35, 0x36,             // file entry variants (mask 0x70 == 0x30)
-                    0x41, 0x42, 0x46, 0x47, 0x4C,       // network location variants (mask 0x70 == 0x40)
-                    0x52,                               // compressed folder
-                    0x61,                               // URI
-                    0x71,                               // control panel
+                uint8_t types[] = { // https://www.geoffchappell.com/studies/windows/shell/shell32/classes/regfolder.htm
+                    0x1F,                                     // root folder / CLSID
+                    0x23, 0x25, 0x29, 0x2A, 0x2E, 0x2F,       // volume variants (mask 0x70 == 0x20)
+                    0x31, 0x32, 0x35, 0x36,                   // file entry variants (mask 0x70 == 0x30)
+                    0x41, 0x42, 0x46, 0x47, 0x4C, 0x4D, 0x4E, // network location variants (mask 0x70 == 0x40)
+                    0x52,                                     // compressed folder
+                    0x61,                                     // URI
+                    0x70, 0x71,                               // control panel
+                    0x72,                                     // printers
+                    0x73,                                     // CommonPlacesFolder
+                    0x74,                                     // UsersFilesFolder
                 };
-                item->class_type = types[rand() % 19];
+                item->class_type = types[rand() % (sizeof(types) / sizeof(types[0]))];
             }
             if(item->raw_len >= 3)
                 item->raw[2] = item->class_type;
@@ -656,10 +662,18 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
         }
 
         case MUTATE_PIDL_NONZERO_TERMINAL:{
-            // terminal is typically cb=0. A non-zero terminal might make the walker
-            // think there is another item and read past the real end of IDList
+            // a non-zero terminal could make the parser think another item
+            // exists to read and therefore read past the real end of IDList
+            // ex. walker reads [83 23] (cb = 9091) and jumps forward 9091 bytes
+            // which hits another section or somewhere unexpected
             pidl->has_terminal = 1;
-            pidl->terminal_value = 1 + (rand() % 10); // small non-zero cb
+            int r = rand() % 100;
+            if(r < 50)
+                pidl->terminal_value = 1 + (rand() % 10); // small
+            else if(r < 80)
+                pidl->terminal_value = rand() & 0xFFFF;   // random uint16_t
+            else
+                pidl->terminal_value = 0xFFFF;            // cb max
             break;
         }
 
