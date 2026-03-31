@@ -193,16 +193,77 @@ if certain flags / offsets match expected values
 
 In these cases the shell item structure is recognized by matching characteristic values or layout patterns within the payload rather than relying on the class type indicator byte. This approach is called signature-based identification.
 
+
+
 ##### Delegate items
 
 One peculiar case is that of delegate items (see [Geoff Chappell's reverse engineering of SHELL32's RegFolder class][https://www.geoffchappell.com/studies/windows/shell/shell32/classes/regfolder.htm]).
 
-A delegate folder is a way for third-party software to inject items into existing Shell folders without replacing the entire folder implementation. For example, Desktop is implemented by `CDesktopFolder`. Typically only Microsoft controls what appears there, but delegate folders allow other software to register items that appear inside the Desktop as if they belong there – things like Dropbox or Google Drive icons that show up alongside My Computer and Recycle Bin.
+The `RegFolder` class in SHELL32 implements the common `IShellFolder` behavior shared by most of the Shell’s virtual folders.
 
-The mechanism works through the registry:
+Example virtual namespace folders:
+
 ```
-HKLM\...\Explorer\CommonPlaces\NameSpace\DelegateFolders\{some-CLSID}
+CDesktopFolder      (Desktop)         
+CDrivesFolder       (My Computer)      
+CControlPanelFolder (Control Panel)   
+CNetFolder          (Network Places)  
+CPrinterFolder      (Printers)          
+CUsersFilesFolder   (Users Files)      
+CCommonPlaceFolder  (Common Places)     
+CTasksFolder        (Control Panel Tasks)
 ```
+
+Common `IShellFolder` operations handled by the `RegFolder` class embedded in each of these virtual folders:
+
+- PIDL parsing and validation
+- shell item enumeration
+- binding to child objects
+- display name resolution
+- delegate item dispatch to COM andlers
+
+The outer class adds folder-specific behavior on top of this behavior.
+
+The PIDL walking and delegate shell item dispatch logic is all done by the `RegFolder` class implemented within these outer classes.
+
+During binding / dispatch, the flow goes like this for every virtual namespace folder:
+
+```
+CShellLink::_ResolveIDList
+	. SHBindToObject
+		. CDesktopFolder::BindToObject
+			. RegFolder::BindToObject – walks to next SHITEMID in PIDL
+				. CDrivesFolder::BindToObject
+					. RegFolder::BindToObject – walks to next SHITEMID in PIDL
+						. CControlPanelFolder::BindToObject
+							. RegFolder::BindToObject – checks for delegate marker
+```
+
+`RegFolder` is doing the walking at each level because every outer virtual folder class delegates `BindToObject` to it fundamentally.
+
+At the beginning of `CRegFolder::BindToObject`, a check is done:
+
+```c
+ v16 = IsDelegateRegId(PIDL, 2147942414LL);
+```
+
+This confirms to `RegFolder` if the shell item at hand is delegate. It then reads the CLSID at the calculated offset and compares it against the known marker value:
+
+```c
+// delegate marker value: {5E591A74-DF96-48D3-8D67-1733BCEE28BA}
+v50 = *(__m128i *)((char *)Item + v45 + 6);
+v60 = v50;
+v51 = v50.m128i_i64[0] - 0x48D3DF965E591A74LL;
+if ( v50.m128i_i64[0] == 0x48D3DF965E591A74LL )
+    v51 = _mm_srli_si128(v50, 8).m128i_u64[0] + 0x45D71143CCE89873LL;
+if ( !v51 ) // match
+    goto LABEL_90; // delegate dispatch path
+```
+
+
+
+
+
 When `CDesktopFolder` enumerates its items, it checks the `DelegateFolders` subkey, loads each registered CLSID as a COM object, and merges those items into its own namespace. The delegate's items appear inside the Desktop but are processed by the delegate's own COM handler, not by `CDesktopFolder`. The [DELEGATEITEMID][https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/ns-shobjidl_core-delegateitemid] format exists to distinguish these injected items from the folder's own items. The marker CLSID (`{5E591A74-...}`) tells `RegFolder` "this item doesn't belong to me, hand it to the delegate COM handler identified by the second CLSID." Without that marker, `RegFolder` would try to parse the item using its own format and misinterpret the bytes.
 
 Delegate folders are an interesting fuzz target because they add a layer of COM dispatch indirection. The parent folder loads a CLSID, creates a COM object, and gives it data. Corrupting the delegate CLSID or the marker CLSID would test what happens when this handoff goes wrong.
@@ -218,6 +279,8 @@ Offset  Size  Field                     Desc
 var     16    GUID                      delegate folder marker CLSID
 var     16    delegate item CLSID       identifies COM handler for this item
 ```
+
+
 
 #### Shell Item Ancestors
 
