@@ -199,6 +199,20 @@ In these cases the shell item structure is recognized by matching characteristic
 
 One peculiar case is that of delegate items (see [Geoff Chappell's reverse engineering of SHELL32's RegFolder class][https://www.geoffchappell.com/studies/windows/shell/shell32/classes/regfolder.htm]).
 
+A delegate shell item is a `SHITEMID` structure that has a sub-item embedded inside its `abID[]` payload. The delegate item structure (inner cb, inner payload, delegate CLSID) is how the bytes inside `abID[]` are laid out for the particular class type.
+
+```
+Offset  Size  Field                     Desc
+0x00    2     cb                        size of entire item
+0x02    2     folder class identifier   same as parent
+0x04    2     outer data size           size of delegate folder's data
+0x06    var   outer data                delegate folder's data for item
+var     16    GUID                      delegate folder marker CLSID
+var     16    delegate item CLSID       identifies COM handler for this item
+```
+
+
+
 The `RegFolder` class in SHELL32 implements the common `IShellFolder` behavior shared by most of the Shell’s virtual folders.
 
 Example virtual namespace folders:
@@ -253,32 +267,49 @@ This confirms to `RegFolder` if the shell item at hand is delegate. It then read
 // delegate marker value: {5E591A74-DF96-48D3-8D67-1733BCEE28BA}
 v50 = *(__m128i *)((char *)Item + v45 + 6);
 v60 = v50;
-v51 = v50.m128i_i64[0] - 0x48D3DF965E591A74LL;
+v51 = v50.m128i_i64[0] - 0x48D3DF965E591A74LL; // half of marker CLSID
 if ( v50.m128i_i64[0] == 0x48D3DF965E591A74LL )
     v51 = _mm_srli_si128(v50, 8).m128i_u64[0] + 0x45D71143CCE89873LL;
 if ( !v51 ) // match
     goto LABEL_90; // delegate dispatch path
 ```
 
+The outer data size (`v45`) is added to the start of the `SHITEMID` and then `+ 6` is done to skip `cb`, `class_type`, and the outer data size field itself. If the item is a delegate, then this offset in the payload will have the delegate marker CLSID occupying the next 16 bytes. If the 16 bytes at this point match the delegate marker CLSID, then `RegFolder` goes to `LABEL_90`. Otherwise, `RegFolder` checks which interface was requested (`a4`) and attempts to query it.
 
+At delegate dispatch (`LABEL_90` and beyond), `RegFolder` reads the next 16 bytes of the payload which come immediately after the marker CLSID. These 16 bytes determine which COM object gets loaded.
 
+This second CLSID is passed to `CRegFolder::_CreateDachedDelegateFolder`, which checks if the COM object is already cached. If not, it creates the COM object by calling:
 
-
-When `CDesktopFolder` enumerates its items, it checks the `DelegateFolders` subkey, loads each registered CLSID as a COM object, and merges those items into its own namespace. The delegate's items appear inside the Desktop but are processed by the delegate's own COM handler, not by `CDesktopFolder`. The [DELEGATEITEMID][https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/ns-shobjidl_core-delegateitemid] format exists to distinguish these injected items from the folder's own items. The marker CLSID (`{5E591A74-...}`) tells `RegFolder` "this item doesn't belong to me, hand it to the delegate COM handler identified by the second CLSID." Without that marker, `RegFolder` would try to parse the item using its own format and misinterpret the bytes.
-
-Delegate folders are an interesting fuzz target because they add a layer of COM dispatch indirection. The parent folder loads a CLSID, creates a COM object, and gives it data. Corrupting the delegate CLSID or the marker CLSID would test what happens when this handoff goes wrong.
-
-A delegate shell item is a `SHITEMID` structure that has a sub-item embedded inside its `abID[]` payload. The delegate item structure (inner cb, inner payload, delegate CLSID) is how the bytes inside `abID[]` are laid out for the particular class type.
-How this looks in memory:
+```c
+CachedObject = _SHCoCreateInstance(
+    a2, // delegate CLSID from the PIDL (16 bytes after the marker)
+    0,
+    0x401u,
+    1,
+    0,
+    &GUID_add8ba80_002b_11d0_8f0f_00c04fd7d062, // IID_IShellExtInit
+    (LPVOID *)&v20
+);
 ```
-Offset  Size  Field                     Desc
-0x00    2     cb                        size of entire item
-0x02    2     folder class identifier   same as parent
-0x04    2     outer data size           size of delegate folder's data
-0x06    var   outer data                delegate folder's data for item
-var     16    GUID                      delegate folder marker CLSID
-var     16    delegate item CLSID       identifies COM handler for this item
-```
+
+The loaded object is then initialized via `_InitFromMachine`, queried for `IShellFolder`, and cached for future use.
+
+
+
+Corrupting the delegate CLSID (16 bytes after marker) in a `DELEGATEITEMID` causes `_SHCoCreateInstance` to process attacker-controlled bytes. Outcomes:
+
+1. CLSID doesn’t exist anywhere – `CoCreateInstance` returns `CLASSNOTREGISTERED`. 
+   - Error handling paths in `_CreateCachedDelegateFolder` tested.
+2. CLSID exists but COM object doesn’t implement `IShellFolder`.
+   - `_SHCoCreateInstance` succeeds (DLL loaded, constructor runs), `_InitFromMachine` inits the object (state potentially modified), `QueryInterface` for `IShellFolder` fails with `E_NOINTERFACE`. The object was created and partially initialized before failure. Error path must correctly tear down the object and undo any state changes from `_InitFromMachine`. Incomplete cleanup has potential.
+3. CLSID maps to a real `IShellFolder` that receives payload data it wasn’t meant to
+   - Handler misparsing, potential crash in `BindToObject`/`ParseDisplayName`.
+4. CLSID is blocked by shell extension load policy
+   - `_ShouldLoadShellExt` returns `E_ACCESSDENIED`, policy enforcement tested.
+5. `CoCreateInstance` fails with `CLASS_E_CLASSNOTREGISTERED` or `CO_E_ERRORINDLL`, but CLSID has `InProcServer32` registry entry. Function falls back to `LoadLibraryExW` on the DLL path from registry, then `_CreateFromModule`. Secondary DLL loading path.
+6. CLSID matches a SHELL32 class, `_CreateFromDllGetClassObject` or `_CreateFromSystem32Dll` creates the object through windows.system.launcher.dll class factory, bypassing `CoCreateInstance` and the registry entirely. Internal class receives attacker-controlled delegate payload data.
+
+
 
 
 

@@ -678,6 +678,15 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
         }
 
         case MUTATE_PIDL_INNER_CB:{
+            // selects a random item's raw payload and overwrites a random 2 byte span (skips cb & class_type, they have operators).
+            // 
+            // If the item is delegate (matches delegate marker value):
+            //  . hitting 0x04 shifts where RegFolder reads both CLSIDs (v45 + 6 in BindToObject)
+            //  . hitting marker CLSID bytes breaks delegate check
+            //  . hitting delegate CLSID bytes causes _SHCoCreateInstance to load an unintended COM object
+            // 
+            // If the item is not delegate, this still corrupts internal size/offset/flag fields, which namespace handlers read.
+
             break;
         }
 
