@@ -52,10 +52,10 @@ static MutationOperatorGroup op_to_group[MUTATE_COUNT] = {
     [MUTATE_PIDL_CHAIN_TRUNCATION]              = GROUP_PIDL,
     [MUTATE_PIDL_TOTAL_SIZE_DESYNC]             = GROUP_PIDL,
     [MUTATE_PIDL_CLASS_TYPE]                    = GROUP_PIDL,
-    [MUTATE_PIDL_DELEGATE_CLSID]                = GROUP_PIDL,
+    [MUTATE_PIDL_INJECT_CLSID]                  = GROUP_PIDL,
     [MUTATE_PIDL_MISSING_TERMINAL]              = GROUP_PIDL,
     [MUTATE_PIDL_NONZERO_TERMINAL]              = GROUP_PIDL,
-    [MUTATE_PIDL_INNER_CB]                      = GROUP_PIDL,
+    [MUTATE_PIDL_DELEGATE_CORRUPT]              = GROUP_PIDL,
     [MUTATE_PIDL_DEPTH]                         = GROUP_PIDL,
 
     [MUTATE_EXTRA_INSERT_BLOCK]                 = GROUP_EXTRA_SEQ,
@@ -183,10 +183,10 @@ static int op_precondition(MutationOperator op, LNKGeneratorState* state, LNKLay
         case MUTATE_PIDL_PARENT_CHILD_MISMATCH:
         case MUTATE_PIDL_CHAIN_TRUNCATION:
         case MUTATE_PIDL_TOTAL_SIZE_DESYNC:
-        case MUTATE_PIDL_DELEGATE_CLSID:
+        case MUTATE_PIDL_INJECT_CLSID:
         case MUTATE_PIDL_MISSING_TERMINAL:
         case MUTATE_PIDL_NONZERO_TERMINAL:
-        case MUTATE_PIDL_INNER_CB:
+        case MUTATE_PIDL_DELEGATE_CORRUPT:
             return layout->has_link_target_idlist && state->linktargetidlist.item_count > 0;
 
         // add more as i go ...
@@ -439,6 +439,37 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
     }
 }
 
+// used by MUTATE_PIDL_DELEGATE_CORRUPT
+// checks if raw SHITEMID is a DELEGATEITEMID by verifying marker CLSID {5E591A74-DF96-48D3-8D67-1733BCEE28BA}
+// returns offset to marker CLSID if found, -1 otherwise
+static int check_delegate(uint8_t* raw, int raw_len){
+    // DELEGATEITEMID:
+    // 0x00 cb              [2]   (size of entire item)
+    // 0x02 class type      [2]   (same as parent)
+    // 0x04 outer data size [2]   (size of delegate folder's data)
+    // 0x06 outer data      [var] (delegate folder's data for item – only the delegate's COM handler interprets these bytes)
+    // var  GUID            [16]  (delegate folder marker CLSID)
+    // var  delegate clsid  [16]  (COM handler to delegate to)
+    
+    // min size = 38
+    if(raw_len < 38) return -1;
+    
+    // read outer data size from offset 0x04 to know how many bytes to skip past to reach the marker CLSID
+    uint16_t outer_size;
+    memcpy(&outer_size, raw + 4, 2);
+
+    // marker clsid @ offset + outer_size + 6
+    int marker = outer_size + 6;
+    if(marker + 32 > raw_len) return -1; // 16 marker CLSID, 16 delegate CLSID
+
+    static const uint8_t marker_clsid[16] = {0x74, 0x1A, 0x59, 0x5E, 0x96, 0xDF, 0xD3, 0x48, 0x8D, 0x67, 0x17, 0x33, 0xBC, 0xEE, 0x28, 0xBA};
+
+    if(memcmp(raw + marker, marker_clsid, 16) == 0)
+        return marker;
+
+    return -1;
+}
+
 // GROUP_PIDL (LinkTargetIDList) mutation operators
 static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
     // operators manipulate shell items in the items[] array
@@ -630,7 +661,7 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
             break;
         }
         
-        case MUTATE_PIDL_DELEGATE_CLSID:{
+        case MUTATE_PIDL_INJECT_CLSID:{
             if(pidl->item_count >= MAX_PIDL_ITEMS || pidl->item_count < 1) break;
             // arbtrary COM load via CLSID injection
             // 0x1f (root folder item) with a random GUID. Since this is not a .lnk file, it
@@ -677,15 +708,64 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
             break;
         }
 
-        case MUTATE_PIDL_INNER_CB:{
-            // selects a random item's raw payload and overwrites a random 2 byte span (skips cb & class_type, they have operators).
-            // 
-            // If the item is delegate (matches delegate marker value):
-            //  . hitting 0x04 shifts where RegFolder reads both CLSIDs (v45 + 6 in BindToObject)
-            //  . hitting marker CLSID bytes breaks delegate check
-            //  . hitting delegate CLSID bytes causes _SHCoCreateInstance to load an unintended COM object
-            // 
-            // If the item is not delegate, this still corrupts internal size/offset/flag fields, which namespace handlers read.
+        case MUTATE_PIDL_DELEGATE_CORRUPT:{
+            // If the item is not a DELEGATEITEMID, this still corrupts internal size/offset/flag fields, which namespace handlers read.
+            if(pidl->item_count < 1) break;
+            int idx = rand() % pidl->item_count;
+            ItemID* item = &pidl->items[idx];
+
+            int marker_offset = check_delegate(item->raw, item->raw_len);
+            if(marker_offset >= 0){ // yes DELEGATEITEMID
+                int mode = rand() % 4;
+
+                switch(mode){
+                    case 0:{
+                        // target: outer data size field @0x04
+                        // corrupt outer data size could be a control primitive for where RegFolder reads bytes from
+                        uint16_t val;
+                        int r = rand() % 100;
+
+                        if(r < 40)
+                            val = rand() % 10;
+                        else if(r < 70)
+                            val = rand() & 0xFFFF;
+                        else if(r < 85)
+                            val = 0;
+                        else
+                            val = 0xFFFF; // max
+                        memcpy(item->raw + 4, &val, 2);
+                        
+                        break;
+                    }
+
+                    case 1:{
+                        // target: marker CLSID bytes @6 + outer_size
+                        // changing bytes of the delegate CLSID could make RegFolder see delegate data as standard and continue to misparse every field
+                        // RegFolder will read from the correct pos, but the bytes there wont match
+                        int byte_offset = marker_offset + (rand() % 16); // random byte within the marker
+                        item->raw[byte_offset] ^= (1 + (rand() % 255)); // xor to ensure a byte changes
+                        break;
+                    }
+
+                    case 2:{
+                        // target: folder class @0x02
+                        // RegFolder gets which parent folder type (ex. Control Panel) created the delegate from this field
+                        // corrupt value could cause RegFolder to use wrong parent folder validation or dispatch logic to the item
+                        
+                    }
+
+                    case 3:{ // TODO: MAKE ENUM WITH KNOWN CLSIDS TO RANDOMLY CHOOSE FROM
+                        // target: delegate item CLSID (16 bytes after the marker CLSID)
+                        // _SHCoCreateInstance(delegate_clsid, ...) receives wrong CLSID
+                        int clsid_offset = marker_offset + 16;
+                        if(clsid_offset + 16 <= item->raw_len){
+                            // ...
+                        }
+                    }
+
+                }
+
+            }
 
             break;
         }

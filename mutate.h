@@ -64,10 +64,10 @@ typedef enum {
     MUTATE_PIDL_CHAIN_TRUNCATION,
     MUTATE_PIDL_TOTAL_SIZE_DESYNC,      // IDListSize field inconsistent with actual items
     MUTATE_PIDL_CLASS_TYPE,             // change abID[0] dispatch byte
-    MUTATE_PIDL_DELEGATE_CLSID,         // inject delegate item with random CLSID
+    MUTATE_PIDL_INJECT_CLSID,           // inject item of a random CLSID
     MUTATE_PIDL_MISSING_TERMINAL,       // remove terminal ItemID
     MUTATE_PIDL_NONZERO_TERMINAL,       // terminal item with non-zero size
-    MUTATE_PIDL_INNER_CB,               // corrupt inner_cb in delegate item — shifts CLSID read
+    MUTATE_PIDL_DELEGATE_CORRUPT,       // corrupts fields inside delegate items
     MUTATE_PIDL_DEPTH,                  // add many items — stack depth attack
 
     // ExtraData block sequence

@@ -199,14 +199,20 @@ In these cases the shell item structure is recognized by matching characteristic
 
 One peculiar case is that of delegate items (see [Geoff Chappell's reverse engineering of SHELL32's RegFolder class][https://www.geoffchappell.com/studies/windows/shell/shell32/classes/regfolder.htm]).
 
+A delegate folder is a COM object that injects shell items into a parent folder. Its outer data is the data that specific delegate folder needs to describe its item. For example, Dropbox registers itself as a delegate folder under Desktop's `DelegateFolders` registry key. When Explorer enumerates Desktop, `RegFolder` loads Dropbox's COM handler. Explorer was able to do this because it always performs a check to see whether or not a folder is delegate. The check is done by searching for a specific delegate CLSID marker in the `abID` payload of the folder currently being parsed – specifically if the first 16 bytes of payload data match the marker value `0x48D3DF965E591A74LL`. This makes the Dropbox `SHITEMID` into a slightly different, embedded structure: `DELEGATEITEMID`. Only Dropbox's COM handler knows how to interpret the outer data bytes within this `DELEGATEITEMID` structure, so `RegFolder` does not read the outer data at all, rather, it uses the outer data size field as a way to skip past the outer data and reach the marker CLSID, which it then uses as the dispatch destination. 
+
+Corrupting the outer data size field would be interesting because `RegFolder` blindly trusts it to calculate the marker offset. If the marker check passes but the outer data bytes is corrupted, the COM handler after dispatch will ingest garbage/controlled data instead of its expected item data.
+
+So, the COM handler that Explorer delegates to for some `DELEGATEITEMID` can be manipulated into reading incorrect fields that it expects, such as flag, path, or whatever fields. These theoretically make viable control primitives.
+
 A delegate shell item is a `SHITEMID` structure that has a sub-item embedded inside its `abID[]` payload. The delegate item structure (inner cb, inner payload, delegate CLSID) is how the bytes inside `abID[]` are laid out for the particular class type.
 
 ```
 Offset  Size  Field                     Desc
 0x00    2     cb                        size of entire item
-0x02    2     folder class identifier   same as parent
+0x02    2     folder class identifier   parent RegFolder type
 0x04    2     outer data size           size of delegate folder's data
-0x06    var   outer data                delegate folder's data for item
+0x06    var   outer data                delegate folder's data for item – only the delegate's COM handler interprets this
 var     16    GUID                      delegate folder marker CLSID
 var     16    delegate item CLSID       identifies COM handler for this item
 ```
@@ -265,14 +271,21 @@ This confirms to `RegFolder` if the shell item at hand is delegate. It then read
 
 ```c
 // delegate marker value: {5E591A74-DF96-48D3-8D67-1733BCEE28BA}
-v50 = *(__m128i *)((char *)Item + v45 + 6);
-v60 = v50;
-v51 = v50.m128i_i64[0] - 0x48D3DF965E591A74LL; // half of marker CLSID
-if ( v50.m128i_i64[0] == 0x48D3DF965E591A74LL )
-    v51 = _mm_srli_si128(v50, 8).m128i_u64[0] + 0x45D71143CCE89873LL;
-if ( !v51 ) // match
-    goto LABEL_90; // delegate dispatch path
+if ( (unsigned int)v12 > 7 ){
+    v45 = *((unsigned __int16 *)Item + 2); // read outer data size @0x04 (regardless of SHITEMID or DELEGATEITEMID)
+    if( v12 >= v45 + 38 ){
+        v50 = *(__m128i *)((char *)Item + v45 + 6);  // try to read marker
+        v60 = v50;
+        v51 = v50.m128i_i64[0] - 0x48D3DF965E591A74LL; // half of marker CLSID
+        if ( v50.m128i_i64[0] == 0x48D3DF965E591A74LL )
+            v51 = _mm_srli_si128(v50, 8).m128i_u64[0] + 0x45D71143CCE89873LL;
+        if ( !v51 ) // match
+            goto LABEL_90; // delegate dispatch path
+    }
+}
 ```
+
+It reads offset 0x04 as if it's the outer data size no matter what the item actually is. Then it checks if the item is large enough `(v12 >= v45 + 38)`, calculates where the marker would be, reads 16 bytes, and compares. For a non-delegate item, `v45` is some unrelated field value, the calculated offset lands on random payload bytes, the 16-byte comparison against the marker fails, and `RegFolder` moves on to the standard path.
 
 The outer data size (`v45`) is added to the start of the `SHITEMID` and then `+ 6` is done to skip `cb`, `class_type`, and the outer data size field itself. If the item is a delegate, then this offset in the payload will have the delegate marker CLSID occupying the next 16 bytes. If the 16 bytes at this point match the delegate marker CLSID, then `RegFolder` goes to `LABEL_90`. Otherwise, `RegFolder` checks which interface was requested (`a4`) and attempts to query it.
 
@@ -294,22 +307,49 @@ CachedObject = _SHCoCreateInstance(
 
 The loaded object is then initialized via `_InitFromMachine`, queried for `IShellFolder`, and cached for future use.
 
+Corrupting the delegate CLSID (16 bytes after marker) in a `DELEGATEITEMID` causes `_SHCoCreateInstance` to process attacker-controlled bytes.
 
-
-Corrupting the delegate CLSID (16 bytes after marker) in a `DELEGATEITEMID` causes `_SHCoCreateInstance` to process attacker-controlled bytes. Outcomes:
+Outcomes:
 
 1. CLSID doesn’t exist anywhere – `CoCreateInstance` returns `CLASSNOTREGISTERED`. 
    - Error handling paths in `_CreateCachedDelegateFolder` tested.
+
+   
+
+   
+
 2. CLSID exists but COM object doesn’t implement `IShellFolder`.
-   - `_SHCoCreateInstance` succeeds (DLL loaded, constructor runs), `_InitFromMachine` inits the object (state potentially modified), `QueryInterface` for `IShellFolder` fails with `E_NOINTERFACE`. The object was created and partially initialized before failure. Error path must correctly tear down the object and undo any state changes from `_InitFromMachine`. Incomplete cleanup has potential.
+
+   - `_SHCoCreateInstance` succeeds (DLL loaded, constructor runs),
+   - `_InitFromMachine` inits the object (state potentially modified),
+   - `QueryInterface` for `IShellFolder` fails with `E_NOINTERFACE`.
+   - The object was created and partially initialized before failure.
+   - Error path must tear down the object and undo any `_InitFromMachine` state changes.
+   - Incomplete cleanup has potential.
+
+   
+
+   
+
 3. CLSID maps to a real `IShellFolder` that receives payload data it wasn’t meant to
+
    - Handler misparsing, potential crash in `BindToObject`/`ParseDisplayName`.
+
+   
+
+   
+
 4. CLSID is blocked by shell extension load policy
+
    - `_ShouldLoadShellExt` returns `E_ACCESSDENIED`, policy enforcement tested.
+
+
+
 5. `CoCreateInstance` fails with `CLASS_E_CLASSNOTREGISTERED` or `CO_E_ERRORINDLL`, but CLSID has `InProcServer32` registry entry. Function falls back to `LoadLibraryExW` on the DLL path from registry, then `_CreateFromModule`. Secondary DLL loading path.
+
+
+
 6. CLSID matches a SHELL32 class, `_CreateFromDllGetClassObject` or `_CreateFromSystem32Dll` creates the object through windows.system.launcher.dll class factory, bypassing `CoCreateInstance` and the registry entirely. Internal class receives attacker-controlled delegate payload data.
-
-
 
 
 
@@ -1578,7 +1618,7 @@ LABEL_100:
 
 The caller (`ResolveAndInvoke`) sees a successful resolution but there’s not a target. If invocation proceeds without checking the PIDL pointer, this is a null pointer dereference or logic bug. The logic bug where code proceeds without a target may skip MOTW checks.
 
-The `MUTATE_PIDL_DELEGATE_CLSID` mutation operator is leveraged here to craft a PIDL that triggers `_IsTargetAnotherLink` rejection, gets nulled, and ultimately causes resolution to report false success to downstream invocation code. Also reachable via `MUTATE_PIDL_MISSING_TERMINAL` or any mutation that causes `_IsTargetAnotherLink` to return 0.
+The `MUTATE_PIDL_INJECT_CLSID` mutation operator is leveraged here to craft a PIDL that triggers `_IsTargetAnotherLink` rejection, gets nulled, and ultimately causes resolution to report false success to downstream invocation code. Also reachable via `MUTATE_PIDL_MISSING_TERMINAL` or any mutation that causes `_IsTargetAnotherLink` to return 0.
 
 
 
@@ -1600,7 +1640,7 @@ Explorer displayed the Control Panel icon without any click or interaction. This
 
 This is the same dispatch path exploited by Stuxnet and CVE-2017-8464. Microsoft patched specific CLSIDs (CPL whitelist kill bits) but the underlying mechanism of an attacker-controlled CLSID in a Shell Item triggering a COM handler to be loaded upon folder view is still functional.
 
-`MUTATE_PIDL_DELEGATE_CLSID` automates this by injecting `0x1F` items with sort order byte and random GUIDs. The sort order byte at offset 3 is required; without it, the GUID is misaligned and
+`MUTATE_PIDL_INJECT_CLSID` automates this by injecting `0x1F` items with sort order byte and random GUIDs. The sort order byte at offset 3 is required; without it, the GUID is misaligned and
 the Shell can't match it to a registered handler. Each of the hundreds of registered COM objects on Windows becomes a fuzz target. A crash in any handler's `BindToObject` or `ParseDisplayName` when processing malformed PIDL payload data is a potential CVE.
 
 Root folder `SHITEMID` binary layout (20 bytes total):
