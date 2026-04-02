@@ -8,6 +8,7 @@
 #include <string.h>
 #include <time.h>
 #include <math.h>
+#include "clsids.h"
 
 /**
  * Scheduler state — Thompson Sampling
@@ -55,7 +56,7 @@ static MutationOperatorGroup op_to_group[MUTATE_COUNT] = {
     [MUTATE_PIDL_INJECT_CLSID]                  = GROUP_PIDL,
     [MUTATE_PIDL_MISSING_TERMINAL]              = GROUP_PIDL,
     [MUTATE_PIDL_NONZERO_TERMINAL]              = GROUP_PIDL,
-    [MUTATE_PIDL_DELEGATE_CORRUPT]              = GROUP_PIDL,
+    [MUTATE_PIDL_DELEGATEITEMID]                = GROUP_PIDL,
     [MUTATE_PIDL_DEPTH]                         = GROUP_PIDL,
 
     [MUTATE_EXTRA_INSERT_BLOCK]                 = GROUP_EXTRA_SEQ,
@@ -186,7 +187,7 @@ static int op_precondition(MutationOperator op, LNKGeneratorState* state, LNKLay
         case MUTATE_PIDL_INJECT_CLSID:
         case MUTATE_PIDL_MISSING_TERMINAL:
         case MUTATE_PIDL_NONZERO_TERMINAL:
-        case MUTATE_PIDL_DELEGATE_CORRUPT:
+        case MUTATE_PIDL_DELEGATEITEMID:
             return layout->has_link_target_idlist && state->linktargetidlist.item_count > 0;
 
         // add more as i go ...
@@ -439,7 +440,7 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
     }
 }
 
-// used by MUTATE_PIDL_DELEGATE_CORRUPT
+// used by MUTATE_PIDL_DELEGATEITEMID
 // checks if raw SHITEMID is a DELEGATEITEMID by verifying marker CLSID {5E591A74-DF96-48D3-8D67-1733BCEE28BA}
 // returns offset to marker CLSID if found, -1 otherwise
 static int check_delegate(uint8_t* raw, int raw_len){
@@ -708,7 +709,7 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
             break;
         }
 
-        case MUTATE_PIDL_DELEGATE_CORRUPT:{
+        case MUTATE_PIDL_DELEGATEITEMID:{
             // If the item is not a DELEGATEITEMID, this still corrupts internal size/offset/flag fields, which namespace handlers read.
             if(pidl->item_count < 1) break;
             int idx = rand() % pidl->item_count;
@@ -754,9 +755,9 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
                         
                     }
 
-                    case 3:{ // TODO: MAKE ENUM WITH KNOWN CLSIDS TO RANDOMLY CHOOSE FROM
+                    case 3:{
                         // target: delegate item CLSID (16 bytes after the marker CLSID)
-                        // _SHCoCreateInstance(delegate_clsid, ...) processes attacker CLSID bytes
+                        // _CreateCachedDelegateFolder calls _SHCoCreateInstance(delegate_clsid, ...) and processes 16 bytes you put there
                         int clsid_offset = marker_offset + 16;
                         if(clsid_offset + 16 <= item->raw_len){
                             // ...

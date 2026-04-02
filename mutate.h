@@ -67,7 +67,7 @@ typedef enum {
     MUTATE_PIDL_INJECT_CLSID,           // inject item of a random CLSID
     MUTATE_PIDL_MISSING_TERMINAL,       // remove terminal ItemID
     MUTATE_PIDL_NONZERO_TERMINAL,       // terminal item with non-zero size
-    MUTATE_PIDL_DELEGATE_CORRUPT,       // corrupts fields inside delegate items
+    MUTATE_PIDL_DELEGATEITEMID,         // corrupts fields inside delegate items
     MUTATE_PIDL_DEPTH,                  // add many items — stack depth attack
 
     // ExtraData block sequence

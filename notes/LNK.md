@@ -309,7 +309,7 @@ CachedObject = _SHCoCreateInstance(
 
 The loaded object is then initialized via `_InitFromMachine`, queried for `IShellFolder`, and cached for future use.
 
-Corrupting the delegate CLSID (16 bytes after marker) in a `DELEGATEITEMID` causes `_SHCoCreateInstance` to process attacker-controlled bytes.
+Corrupting the delegate CLSID (16 bytes after marker) in a `DELEGATEITEMID` causes `_SHCoCreateInstance` to process attacker-controlled bytes. For instance, if you corrupt the delegate item CLSID, `_CreateCachedDelegateFolder` calls `_SHCoCreateInstance` with whatever 16 bytes you put there, then queries for `IShellFolder`. If those bytes happen to be the CLSID of My Computer (`CDrivesFolder`), the call succeeds: `CDrivesFolder` implements `IShellFolder`. Now `RegFolder` hands the delegate's outer data to `CDrivesFolder`, which tries to parse it as if it's drive enumeration data. But the outer data was written by a completely different delegate handler. Every field is misinterpreted.
 
 Outcomes:
 
@@ -1642,8 +1642,7 @@ Explorer displayed the Control Panel icon without any click or interaction. This
 
 This is the same dispatch path exploited by Stuxnet and CVE-2017-8464. Microsoft patched specific CLSIDs (CPL whitelist kill bits) but the underlying mechanism of an attacker-controlled CLSID in a Shell Item triggering a COM handler to be loaded upon folder view is still functional.
 
-`MUTATE_PIDL_INJECT_CLSID` automates this by injecting `0x1F` items with sort order byte and random GUIDs. The sort order byte at offset 3 is required; without it, the GUID is misaligned and
-the Shell can't match it to a registered handler. Each of the hundreds of registered COM objects on Windows becomes a fuzz target. A crash in any handler's `BindToObject` or `ParseDisplayName` when processing malformed PIDL payload data is a potential CVE.
+`MUTATE_PIDL_INJECT_CLSID` automates this by injecting `0x1F` items with sort order byte and random GUIDs. The sort order byte at offset 3 is required; without it, the GUID is misaligned and the Shell can't match it to a registered handler. Each of the hundreds of registered COM objects on Windows becomes a fuzz target. A crash in any handler's `BindToObject` or `ParseDisplayName` when processing malformed PIDL payload data is a potential CVE.
 
 Root folder `SHITEMID` binary layout (20 bytes total):
 ```
