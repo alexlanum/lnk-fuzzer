@@ -756,7 +756,7 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
 
                     case 3:{ // TODO: MAKE ENUM WITH KNOWN CLSIDS TO RANDOMLY CHOOSE FROM
                         // target: delegate item CLSID (16 bytes after the marker CLSID)
-                        // _SHCoCreateInstance(delegate_clsid, ...) receives wrong CLSID
+                        // _SHCoCreateInstance(delegate_clsid, ...) processes attacker CLSID bytes
                         int clsid_offset = marker_offset + 16;
                         if(clsid_offset + 16 <= item->raw_len){
                             // ...
