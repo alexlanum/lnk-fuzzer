@@ -636,6 +636,7 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
         }
         
         case MUTATE_PIDL_CLASS_TYPE:{
+            if(pidl->item_count < 1) break;
             int idx = rand() % pidl->item_count;
             ItemID* item = &pidl->items[idx];
             // 70% random byte to test undocumented handlers
@@ -694,10 +695,8 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
         }
 
         case MUTATE_PIDL_NONZERO_TERMINAL:{
-            // a non-zero terminal could make the parser think another item
-            // exists to read and therefore read past the real end of IDList
-            // ex. walker reads [83 23] (cb = 9091) and jumps forward 9091 bytes
-            // which hits another section or somewhere unexpected
+            // a non-zero terminal could make the parser think another item exists to read and therefore read past the real end of IDList
+            // ex. walker reads [83 23] (cb = 9091) and jumps forward 9091 bytes – hits another section or somewhere unexpected
             pidl->has_terminal = 1;
             int r = rand() % 100;
             if(r < 50)
@@ -710,7 +709,20 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
         }
 
         case MUTATE_PIDL_DELEGATEITEMID:{
-            // If the item is not a DELEGATEITEMID, this still corrupts internal size/offset/flag fields, which namespace handlers read.
+            // chooses a random item from the PIDL, calls check_delagate on it:
+            //   DELEGATEITEMID found: targeted surgical mutation on four delegate-specific fields
+            //   normal SHITEMID: skip, other operators handle non-delegate mutations
+            //
+            // four cases target fields that RegFolder reads during delegate check and dispatch:
+            //   case 0: outer data size (shifts marker CLSID read offset)
+            //   case 1: marker CLSID bytes (breaks delegate identification)
+            //   case 2: folder class identifier (wrong parent folder context)
+            //   case 3: delegate item CLSID (wrong COM handler loaded)
+            //
+            // some delegate items also contain extension blocks (0xbeef0004, 0xbeef0013, etc.)
+            // after the delegate CLSID. these are parsed by the delegate's own COM handler,
+            // not by RegFolder. corrupting them is handled by apply_extra mutation operators
+            // and AFL++ havoc on the serialized output. no dedicated fifth case needed here.
             if(pidl->item_count < 1) break;
             int idx = rand() % pidl->item_count;
             ItemID* item = &pidl->items[idx];
@@ -718,32 +730,133 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
             int marker_offset = check_delegate(item->raw, item->raw_len);
             if(marker_offset >= 0){ // is DELEGATEITEMID
                 int mode = rand() % 4;
-
                 switch(mode){
                     case 0:{
-
+                        // TARGET: DELEGATEITEMID outer data size field @0x04
+                        // in BindToObject dispatch, RegFolder calculates the
+                        // marker CLSID position as item + outer data size + 6.
+                        // corrupting outer data size displaces that position.
+                        // RegFolder will read 16 bytes from the wrong location
+                        // and compare them against the marker.
+                        uint16_t val;
+                        int r = rand() % 100;
+                        if(r < 40){
+                            val = rand() % 10;     // small, read position is still inside the item buffer
+                        } else if(r < 70){
+                            val = rand() & 0xFFFF; // land anywhere, unpredictable misalignment
+                        } else if(r < 85){
+                            val = 0;               // skip outer data, read from offset 6
+                        } else{
+                            val = 0xFFFF;          // overflow item buffer
+                        }
+                        memcpy(item->raw + 4, &val, 2); // corrupt 0x04, 0x05
+                        break;
                     }
 
                     case 1:{
-
+                        // TARGET: marker CLSID bytes @Item + outer data size + 6
+                        // corrupt the marker CLSID bytes so RegFolder can't match
+                        // them to {5E591A74-DF96-48D3-8D67-1733BCEE28BA}.
+                        // ex. comparison fails because byte 4 is now 0xA9 not 0x96
+                        // RegFolder concludes "not a delegate," and processes the
+                        // delegate item using standard format.
+                        int byte_offset = marker_offset + (rand() % 16);
+                        item->raw[byte_offset] ^= (1 + (rand() % 255)); // change a random byte in marker
+                        break;
                     }
 
                     case 2:{
-
+                        // TARGET: folder class identifier @0x02
+                        // RegFolder reaads this to determine which parent folder
+                        // type (ex. Control Panel) created this delegate. a wrong
+                        // value means the item doesn't match any known parent.
+                        // RegFolder may reject, dispatch to another handler, or
+                        // process it with wrong assumptions about its outer data.
+                        uint16_t val = rand() & 0xFFFF;
+                        memcpy(item->raw + 2, &val, 2); // corrupt 0x02, 0x03
+                        break;
                     }
 
                     case 3:{
-
+                        // TARGET: delegate item CLSID (16 bytes AFTER marker)
+                        // after marker check passes, RegFolder reads these 16
+                        // bytes and passes them to _CreateCachedDelegateFolder
+                        // which calls _SHCoCreateInstance to load the COM object.
+                        int clsid_offset = marker_offset + 16;
+                        if(clsid_offset + 16 > item->raw_len) break;
+                        
+                        int r = rand() % 100;
+                        if(r < 30){
+                            // 30% rndm: test error handling when CLSID doesn't exist
+                            for(int i = 0; i < 16; i++)
+                                item->raw[clsid_offset + i] = rand() & 0xFF;
+                        } else{
+                            // 70% known IShellFolder: test real handlers receiving
+                            // DELEGATEITEMID outer data they weren't designed to parse
+                            int ci = rand() % KNOWN_SHELL_CLSIDS_COUNT;
+                            memcpy(item->raw + clsid_offset, KNOWN_SHELL_CLSIDS[ci], 16);
+                        }
+                        break;
                     }
-
                 }
-
+            } else{ // not a DELEGATEITEMID
+                break;
             }
 
             break;
         }
 
         case MUTATE_PIDL_DEPTH:{
+            // PIDL namespace resolution is done by walking each item left-right, calling
+            // BindToObject at each level. Each call goes deeper into the call stack
+            // Each item adds at least 2 stack frames (outer folder + RegFolder)
+            // Adding 50 items to the PIDL means 100+ nested BindToObject calls
+            // The stack is finite, so this will exhaust the thread's stack space
+            // This tests if the Shell has a depth check before recursing, and if so,
+            // whether it handles the limit correctly.
+
+            // need at least 1 existing item because we are gonna duplicate it
+            // chose duplication instead of item creation because its simpler and
+            // ensures each item is valid enough to reach the BindToObject recursion
+            if(pidl->item_count < 1 || pidl->item_count >= MAX_PIDL_ITEMS) break;
+
+            int src = rand() % pidl->item_count;
+            ItemID* dupe = &pidl->items[src];
+
+            // fill remaining PIDL with copies
+            int capacity = (MAX_PIDL_ITEMS - pidl->item_count);
+            // but randomize how many, sometimes moderate depth, sometimes extreme
+            int r = rand() % 100;
+            if(r < 50){
+                capacity = 10 + (rand() % 20); // moderate: 10-29 items
+            } else if(r < 80){
+                capacity = 30 + (rand() % 30); // deep: 30-59 items
+            } else{
+                capacity = capacity;           // max: fill up with items
+            }
+
+            if(pidl->item_count + capacity > MAX_PIDL_ITEMS)
+                capacity = MAX_PIDL_ITEMS - pidl->item_count;
+
+            for(int i = 0; i < capacity; i++){
+                // go through the entire capacity and place the dupes
+                ItemID* dst = &pidl->items[pidl->item_count]; // IDList end
+                memset(dst, 0, sizeof(ItemID));
+                dst->size = dupe->size;
+                dst->class_type = dupe->class_type;
+                dst->type = dupe->type;
+                dst->payload_len = dupe->payload_len;
+                if(dupe->payload && dupe->payload_len > 0){
+                    dst->payload = malloc(dupe->payload_len);
+                    memcpy(dst->payload, dupe->payload, dupe->payload_len);
+                }
+                dst->raw_len = dupe->raw_len;
+                if(dupe->raw && dupe->raw_len > 0){
+                    dst->raw = malloc(dupe->raw_len);
+                    memcpy(dst->raw, dupe->raw, dupe->raw_len);
+                }
+                pidl->item_count++;
+            }
             break;
         }
 
@@ -815,8 +928,3 @@ MutationOperator mutate_apply(LNKGeneratorState* state, LNKLayout* layout){
 
     return chosen_op;
 }
-
-
-/**
- * Operators
- */
