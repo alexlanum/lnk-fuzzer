@@ -716,52 +716,24 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
             ItemID* item = &pidl->items[idx];
 
             int marker_offset = check_delegate(item->raw, item->raw_len);
-            if(marker_offset >= 0){ // yes DELEGATEITEMID
+            if(marker_offset >= 0){ // is DELEGATEITEMID
                 int mode = rand() % 4;
 
                 switch(mode){
                     case 0:{
-                        // target: outer data size field @0x04
-                        // corrupt outer data size could be a control primitive for where RegFolder reads bytes from
-                        uint16_t val;
-                        int r = rand() % 100;
 
-                        if(r < 40)
-                            val = rand() % 10;
-                        else if(r < 70)
-                            val = rand() & 0xFFFF;
-                        else if(r < 85)
-                            val = 0;
-                        else
-                            val = 0xFFFF; // max
-                        memcpy(item->raw + 4, &val, 2);
-                        
-                        break;
                     }
 
                     case 1:{
-                        // target: marker CLSID bytes @6 + outer_size
-                        // changing bytes of the delegate CLSID could make RegFolder see delegate data as standard and continue to misparse every field
-                        // RegFolder will read from the correct pos, but the bytes there wont match
-                        int byte_offset = marker_offset + (rand() % 16); // random byte within the marker
-                        item->raw[byte_offset] ^= (1 + (rand() % 255)); // xor to ensure a byte changes
-                        break;
+
                     }
 
                     case 2:{
-                        // target: folder class @0x02
-                        // RegFolder gets which parent folder type (ex. Control Panel) created the delegate from this field
-                        // corrupt value could cause RegFolder to use wrong parent folder validation or dispatch logic to the item
-                        
+
                     }
 
                     case 3:{
-                        // target: delegate item CLSID (16 bytes after the marker CLSID)
-                        // _CreateCachedDelegateFolder calls _SHCoCreateInstance(delegate_clsid, ...) and processes 16 bytes you put there
-                        int clsid_offset = marker_offset + 16;
-                        if(clsid_offset + 16 <= item->raw_len){
-                            // ...
-                        }
+
                     }
 
                 }
