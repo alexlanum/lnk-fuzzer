@@ -1379,7 +1379,7 @@ Now control has been transferred to a specific handler that will check policy an
 
 This is a structure-aware, state-aware, mutation-based fuzzer for LNK files that integrates with AFL++ as a custom mutator library. AFL++ handles seed scheduling, energy assignment, coverage tracking, corpus management, and forkserver execution. My custom mutator design shall handle LNK deserialization, structure-aware mutation, and mutation operator scheduling.
 
-
+![Anatomy of a modern fuzzer](image.png)
 
 ## Energy
 
