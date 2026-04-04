@@ -279,7 +279,7 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
     if(layout->has_linkinfo && state->linkinfo.has_common_network_relative_link) targets[tcount++] = T_CNRL;
     if(layout->has_extradata && state->extradata.block_count > 0) targets[tcount++]                = T_EXTRA;
     if(layout->has_propstore_block) targets[tcount++]                                              = T_PROPSTORE_STOR;
-    if(layout->has_propstore_block) targets[tcount++]                                              = T_PROPSTORE_VAL;
+    if(layout->has_propstore_block)targets[tcount++]                                               = T_PROPSTORE_VAL;
 
     if(tcount == 0) return;
     int t = targets[rand() % tcount]; // choose a random valid field to mutate
@@ -866,7 +866,6 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
 }
 
 // GROUP_OFFSETS
-// target: LinkInfo offset fields
 static void apply_offsets(MutationOperator op, LNKGeneratorState* state){
     // LinkInfo:
     //   volume_id_offset
@@ -885,6 +884,27 @@ static void apply_offsets(MutationOperator op, LNKGeneratorState* state){
 
     // KnownFolderDataBlock:
     //   offset (PIDL index — CVE-2017-8464 attack surface)
+
+    uint32_t* offset_fields[12];
+    int count = 0;
+    
+    if(state->core.has_linkinfo){
+
+    }
+
+    // SpecialFolderDataBlock and KnownFolderDataBlock offsets
+    // these are PIDL indices, not byte offsets into LinkInfo
+    // but the mutation strategies still apply
+    for(int i = 0; i < state->extradata.block_count; i++){
+
+    }
+
+    switch(op){
+        case MUTATE_OFFSET_CHAIN:{
+
+        }
+    }
+
 }
 
 // do mutation
