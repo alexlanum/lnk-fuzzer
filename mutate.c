@@ -865,13 +865,35 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
     }
 }
 
+// GROUP_OFFSETS
+// target: LinkInfo offset fields
+static void apply_offsets(MutationOperator op, LNKGeneratorState* state){
+    // LinkInfo:
+    //   volume_id_offset
+    //   local_base_path_offset
+    //   common_network_relative_link_offset
+    //   common_path_suffix_offset
+    //   local_base_path_offset_unicode
+    //   common_path_suffix_offset_unicode
+
+    // CommonNetworkRelativeLink (inside LinkInfo):
+    //   net_name_offset
+    //   device_name_offset
+
+    // SpecialFolderDataBlock:
+    //   offset (PIDL index — CVE-2017-8464 attack surface)
+
+    // KnownFolderDataBlock:
+    //   offset (PIDL index — CVE-2017-8464 attack surface)
+}
+
 // do mutation
 static void op_apply(MutationOperator op, LNKGeneratorState* state, LNKLayout* layout){
     switch(op_to_group[op]){
-        case GROUP_FLAGS: apply_flags(op, state);         break;
-        case GROUP_SIZES: apply_sizes(op, state, layout); break;
-        case GROUP_PIDL:  apply_pidl(op, state);          break;
-        
+        case GROUP_FLAGS:   apply_flags(op, state);         break;
+        case GROUP_SIZES:   apply_sizes(op, state, layout); break;
+        case GROUP_PIDL:    apply_pidl(op, state);          break;
+        case GROUP_OFFSETS: apply_offsets(op, state);       break;
         // add more...
 
         default: break;
