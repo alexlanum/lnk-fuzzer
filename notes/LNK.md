@@ -1117,10 +1117,10 @@ typedef struct tagPROPVARIANT {
 
 ### SpecialFolderDataBlock
 ```
-BlockSize                   0x00000010
-BlockSignature              0xa0000005
-SpecialFolderID
-First child segment offset
+0x00  4  BlockSize          = 0x10
+0x04  4  BlockSignature     = 0xA0000005
+0x08  4  SpecialFolderID    = CSIDL value
+0x0C  4  Offset             = index into PIDL
 ```
 
 The "first child segment offset" is just an index into the PIDL that tells the Shell which shell item in the LinkTargetIDList the special folder refers to. So it is just an offset into the PIDL.

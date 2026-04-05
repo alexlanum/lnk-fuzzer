@@ -875,64 +875,83 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
 // GROUP_OFFSETS
 static void apply_offsets(MutationOperator op, LNKGeneratorState* state){
     // LinkInfo:
-    //   volume_id_offset
-    //   local_base_path_offset
-    //   common_network_relative_link_offset
-    //   common_path_suffix_offset
-    //   local_base_path_offset_unicode
-    //   common_path_suffix_offset_unicode
-
-    // CommonNetworkRelativeLink (inside LinkInfo):
-    //   net_name_offset
-    //   device_name_offset
-
-    // SpecialFolderDataBlock:
-    //   offset (PIDL index — CVE-2017-8464 attack surface)
-
-    // KnownFolderDataBlock:
-    //   offset (PIDL index — CVE-2017-8464 attack surface)
-
-    uint32_t* offset_fields[12];
-    int count = 0;
+    //   [0] volume_id_offset
+    //   [1] local_base_path_offset
+    //   [2] common_network_relative_link_offset
+    //   [3] common_path_suffix_offset
+    //
+    // LinkInfo Unicode (header size >= 0x24):
+    //   [4] local_base_path_offset_unicode
+    //   [5] common_path_suffix_offset_unicode
+    //
+    // LinkInfo CNRL (if HasCommonNetworkRelativeLink):
+    //   [6] net_name_offset
+    //   [7] device_name_offset
+    //
+    // LinkInfo CNRL Unicode (if CNRL size >= 0x14):
+    //   [8] net_name_offset_unicode
+    //   [9] device_name_offset_unicode
+    //
+    // ExtraData (0-2 blocks with offsets, CVE-2017-8464 AS):
+    //   [10] SpecialFolderDataBlock PIDL index
+    //   [11] KnownFolderDataBlock PIDL index
+    uint32_t* offset_fields[14];
+    int field_count = 0; // will typically be 4-8, max 12
 
     if(state->core.has_linkinfo){
-        // offset field slots are always in the 0x1C header regardless of LinkInfoFlags
-        // parser only follows them when the corresponding flags are set
-        offset_fields[count++] = &state->linkinfo.volume_id_offset;
-        offset_fields[count++] = &state->linkinfo.local_base_path_offset;
-        offset_fields[count++] = &state->linkinfo.common_network_relative_link_offset;
-        offset_fields[count++] = &state->linkinfo.common_path_suffix_offset;
-
+        // these offset fields are always present in the 0x1C header if a LinkInfo exists
+        offset_fields[field_count++] = &state->linkinfo.volume_id_offset;
+        offset_fields[field_count++] = &state->linkinfo.local_base_path_offset;
+        offset_fields[field_count++] = &state->linkinfo.common_network_relative_link_offset;
+        offset_fields[field_count++] = &state->linkinfo.common_path_suffix_offset;
+        
         // unicode offsets only present when LinkInfoHeaderSize >= 0x24
         if(state->linkinfo.link_info_header_size >= 0x24){
-            offset_fields[count++] = &state->linkinfo.local_base_path_offset_unicode;
-            offset_fields[count++] = &state->linkinfo.common_path_suffix_offset_unicode;
+            offset_fields[field_count++] = &state->linkinfo.local_base_path_offset_unicode;
+            offset_fields[field_count++] = &state->linkinfo.common_path_suffix_offset_unicode;
         }
 
-        // CNRL has its own pair of offsets for the two name strings
+        // CNRL is optional and has its own offsets for two name strings (these are always present if CNRL exists)
         if(state->linkinfo.has_common_network_relative_link){
-            offset_fields[count++] = &state->linkinfo.common_network_relative_link.net_name_offset;
-            offset_fields[count++] = &state->linkinfo.common_network_relative_link.device_name_offset;
+            offset_fields[field_count++] = &state->linkinfo.common_network_relative_link.net_name_offset;
+            offset_fields[field_count++] = &state->linkinfo.common_network_relative_link.device_name_offset;
+
+            // optional fields which only exist when CommonNetworkRelativeLinkSize >= 0x14
+            if(state->linkinfo.common_network_relative_link.common_network_relative_link_size >= 0x14){
+                offset_fields[field_count++] = &state->linkinfo.common_network_relative_link.net_name_offset_unicode;
+                offset_fields[field_count++] = &state->linkinfo.common_network_relative_link.device_name_offset_unicode;
+            }
         }
     }
 
-    // SpecialFolderDataBlock and KnownFolderDataBlock offsets
+    // SpecialFolderDataBlock & KnownFolderDataBlock offsets
     // these are PIDL indices, not byte offsets into LinkInfo
     // but the mutation strategies still apply
     for(int i = 0; i < state->extradata.block_count; i++){
-        ExtraDataBlock* blk = &state->extradata.blocks[i];
-        if(blk->type == EXTRA_SPECIAL_FOLDER && blk->data){
+        ExtraDataBlock* edb = &state->extradata.blocks[i];
+        if(edb->type == EXTRA_SPECIAL_FOLDER && edb->data){
+            // SpecialFolderDataBlock:
+            // 0x00  4  BlockSize        = 0x10
+            // 0x04  4  BlockSignature   = 0xA0000005
+            // 0x08  4  SpecialFolderID  = CSIDL value
+            // 0x0C  4  Offset           = index into PIDL
             // payload layout: [SpecialFolderID:4][Offset:4]
-            offset_fields[count++] = (uint32_t*)(blk->data + 4);
-        } else if(blk->type == EXTRA_KNOWN_FOLDER && blk->data){
+            offset_fields[field_count++] = (uint32_t*)(edb->data + 4);
+        } else if(edb->type == EXTRA_KNOWN_FOLDER && edb->data){
+            // KnownFolderDataBlock:
+            // 0x00  4   BlockSize       = 0x1C
+            // 0x04  4   BlockSignature  = 0xA000000B
+            // 0x08  16  KnownFolderID   = GUID, ex. Control Panel GUID
+            // 0x18  4   Offset          = index into PIDL
             // payload layout: [KnownFolderID:16][Offset:4]
-            offset_fields[count++] = (uint32_t*)(blk->data + 16);
+            offset_fields[field_count++] = (uint32_t*)(edb->data + 16);
         }
+        
     }
 
-    if(count == 0) return;
+    if(field_count == 0) return;
 
-    int idx = rand() % count;
+    int idx = rand() % field_count;
     uint32_t* target = offset_fields[idx];
 
     switch(op){
@@ -945,30 +964,44 @@ static void apply_offsets(MutationOperator op, LNKGeneratorState* state){
 
         case MUTATE_OFFSET_PAST_EOF:{
             // offset exceeds the containing structure's declared size:
-            // parser dereferences beyond valid data, reaching adjacent sections or unmapped memory
-            int r = rand() % 3;
-            if(r == 0)
-                *target = 0xFFFFFFFF;                           // max: guaranteed OOB
-            else if(r == 1)
-                *target = 0x10000 + (rand() % 0x10000);         // 64KB–128KB: past any real LinkInfo
-            else
-                *target = *target + 0x400 + (rand() % 0xFC00);  // current + large forward delta
+            // parser dereferences data out of bounds, ex. adjacent sections, unmapped memory
+            int r = rand() % 100;
+            if(r < 30) // 30%
+                // max uint32 value. if the parser does pBase + offset, this wraps the pointer
+                // around on 32-bit or produces a huge value on 64-bit.
+                // observes:
+                //  . if the parser checks bounds properly before adding offset to a base
+                //  . if the parser recklessly casts the offset to another type
+                *target = 0xFFFFFFFF; // fails > max checks, passes < 0 checks (seen as -1 if signed)
+            else if(r < 50) // 20%
+                // max int32 value. if the parser stores offset as int32, this is the largest
+                // positive value. adding anything to it overflows to negative.
+                // observes:
+                //  . signed integer overflow in offset arithmetic
+                *target = 0x7FFFFFFF; // passes < 0 checks, passes > 0 checks, fails only against max bounds checks
+            else if(r < 75) // 25%
+                // rndm val between 65536 (64KB) and 131071 (128KB).
+                // far past than any LinkInfo or ExtraData section, but small enough
+                // to potentially land in mapped memory (adjacent sections, heap data).
+                // typical LinkInfo section is ~300 bytes, this is 100x-1000x that.
+                // observes:
+                //  . behavior that emerges when the parser reads bytes from completely different memory
+                *target = 0x10000 + (rand() % 0x10000);
+            else // 25%
+                // take the current (valid) offset and add 0x400 (1KB) to 0xFC00 (65KB) to it.
+                // the offset now points past the end of the section.
+                // observes:
+                //  . if the parser compares offset against section size before dereferencing
+                *target = *target + 0x400 + (rand() % 0xFC00); // cur + large fwd jump
             break;
         }
 
         case MUTATE_OFFSET_OVERLAP:{
+            // two offsets point to same region
             // set this offset to the value of another field: two parsers read the same bytes
             // with different type assumptions (e.g. VolumeID parser and CNRL parser both
             // start at the same location, interpreting the same bytes as different structures)
-            if(count < 2){
-                // only one field: nudge it to create partial overlap with adjacent bytes
-                uint32_t delta = 1 + (rand() % 4);
-                *target = (*target >= delta) ? (*target - delta) : (*target + delta);
-            } else {
-                int other = idx;
-                while(other == idx) other = rand() % count;
-                *target = *offset_fields[other];
-            }
+            
             break;
         }
 
