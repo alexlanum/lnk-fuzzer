@@ -190,6 +190,13 @@ static int op_precondition(MutationOperator op, LNKGeneratorState* state, LNKLay
         case MUTATE_PIDL_DELEGATEITEMID:
             return layout->has_link_target_idlist && state->linktargetidlist.item_count > 0;
 
+        case MUTATE_OFFSET_ZERO:
+        case MUTATE_OFFSET_PAST_EOF:
+        case MUTATE_OFFSET_OVERLAP:
+        case MUTATE_OFFSET_WITHIN_HEADER:
+        case MUTATE_OFFSET_CHAIN:
+            return layout->has_linkinfo || layout->has_knownfolder_block; // at least one offset field must be present to target
+
         // add more as i go ...
 
         default:
@@ -887,24 +894,119 @@ static void apply_offsets(MutationOperator op, LNKGeneratorState* state){
 
     uint32_t* offset_fields[12];
     int count = 0;
-    
-    if(state->core.has_linkinfo){
 
+    if(state->core.has_linkinfo){
+        // offset field slots are always in the 0x1C header regardless of LinkInfoFlags
+        // parser only follows them when the corresponding flags are set
+        offset_fields[count++] = &state->linkinfo.volume_id_offset;
+        offset_fields[count++] = &state->linkinfo.local_base_path_offset;
+        offset_fields[count++] = &state->linkinfo.common_network_relative_link_offset;
+        offset_fields[count++] = &state->linkinfo.common_path_suffix_offset;
+
+        // unicode offsets only present when LinkInfoHeaderSize >= 0x24
+        if(state->linkinfo.link_info_header_size >= 0x24){
+            offset_fields[count++] = &state->linkinfo.local_base_path_offset_unicode;
+            offset_fields[count++] = &state->linkinfo.common_path_suffix_offset_unicode;
+        }
+
+        // CNRL has its own pair of offsets for the two name strings
+        if(state->linkinfo.has_common_network_relative_link){
+            offset_fields[count++] = &state->linkinfo.common_network_relative_link.net_name_offset;
+            offset_fields[count++] = &state->linkinfo.common_network_relative_link.device_name_offset;
+        }
     }
 
     // SpecialFolderDataBlock and KnownFolderDataBlock offsets
     // these are PIDL indices, not byte offsets into LinkInfo
     // but the mutation strategies still apply
     for(int i = 0; i < state->extradata.block_count; i++){
-
-    }
-
-    switch(op){
-        case MUTATE_OFFSET_CHAIN:{
-
+        ExtraDataBlock* blk = &state->extradata.blocks[i];
+        if(blk->type == EXTRA_SPECIAL_FOLDER && blk->data){
+            // payload layout: [SpecialFolderID:4][Offset:4]
+            offset_fields[count++] = (uint32_t*)(blk->data + 4);
+        } else if(blk->type == EXTRA_KNOWN_FOLDER && blk->data){
+            // payload layout: [KnownFolderID:16][Offset:4]
+            offset_fields[count++] = (uint32_t*)(blk->data + 16);
         }
     }
 
+    if(count == 0) return;
+
+    int idx = rand() % count;
+    uint32_t* target = offset_fields[idx];
+
+    switch(op){
+        case MUTATE_OFFSET_ZERO:{
+            // offset = 0: parser jumps to byte 0 of the structure (the size field),
+            // reading header bytes as whatever data it expected (string, substructure, etc.)
+            *target = 0;
+            break;
+        }
+
+        case MUTATE_OFFSET_PAST_EOF:{
+            // offset exceeds the containing structure's declared size:
+            // parser dereferences beyond valid data, reaching adjacent sections or unmapped memory
+            int r = rand() % 3;
+            if(r == 0)
+                *target = 0xFFFFFFFF;                           // max: guaranteed OOB
+            else if(r == 1)
+                *target = 0x10000 + (rand() % 0x10000);         // 64KB–128KB: past any real LinkInfo
+            else
+                *target = *target + 0x400 + (rand() % 0xFC00);  // current + large forward delta
+            break;
+        }
+
+        case MUTATE_OFFSET_OVERLAP:{
+            // set this offset to the value of another field: two parsers read the same bytes
+            // with different type assumptions (e.g. VolumeID parser and CNRL parser both
+            // start at the same location, interpreting the same bytes as different structures)
+            if(count < 2){
+                // only one field: nudge it to create partial overlap with adjacent bytes
+                uint32_t delta = 1 + (rand() % 4);
+                *target = (*target >= delta) ? (*target - delta) : (*target + delta);
+            } else {
+                int other = idx;
+                while(other == idx) other = rand() % count;
+                *target = *offset_fields[other];
+            }
+            break;
+        }
+
+        case MUTATE_OFFSET_WITHIN_HEADER:{
+            // offset lands inside the structure's own fixed-size header:
+            // parser expects a string or substructure but reads size/flags/offset bytes instead.
+            // LinkInfo header occupies 0x00–0x1B (standard) or 0x00–0x23 (with unicode offsets).
+            // CNRL header occupies 0x00–0x13. For PIDL indices, small values address
+            // the first items in the IDList or fall below item_count entirely.
+            uint32_t header_positions[] = {0, 1, 2, 4, 8, 0x0C, 0x10, 0x14, 0x18};
+            *target = header_positions[rand() % (sizeof(header_positions) / sizeof(header_positions[0]))];
+            break;
+        }
+
+        case MUTATE_OFFSET_CHAIN:{
+            // point this offset at a position where another offset field is stored in
+            // the binary representation of the structure. when the parser follows this
+            // field it lands on the raw bytes of a neighbouring offset and reads them
+            // as data — creating aliased interpretation of header content.
+            //
+            // LinkInfo binary layout (relative to start of LinkInfo):
+            //   0x0C: volume_id_offset
+            //   0x10: local_base_path_offset
+            //   0x14: common_network_relative_link_offset
+            //   0x18: common_path_suffix_offset
+            //   0x1C: local_base_path_offset_unicode  (header >= 0x24 only)
+            //   0x20: common_path_suffix_offset_unicode
+            //
+            // CNRL binary layout (relative to start of CNRL):
+            //   0x08: net_name_offset
+            //   0x0C: device_name_offset
+            uint32_t chain_positions[] = {0x08, 0x0C, 0x10, 0x14, 0x18, 0x1C, 0x20};
+            *target = chain_positions[rand() % (sizeof(chain_positions) / sizeof(chain_positions[0]))];
+            break;
+        }
+
+        default: break;
+    }
 }
 
 // do mutation
