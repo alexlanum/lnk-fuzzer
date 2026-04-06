@@ -895,7 +895,7 @@ static void apply_offsets(MutationOperator op, LNKGeneratorState* state){
     // ExtraData (0-2 blocks with offsets, CVE-2017-8464 AS):
     //   [10] SpecialFolderDataBlock PIDL index
     //   [11] KnownFolderDataBlock PIDL index
-    uint32_t* offset_fields[14];
+    uint32_t* offset_fields[12];
     int field_count = 0; // will typically be 4-8, max 12
 
     if(state->core.has_linkinfo){
@@ -999,16 +999,21 @@ static void apply_offsets(MutationOperator op, LNKGeneratorState* state){
         case MUTATE_OFFSET_OVERLAP:{
             // two offsets point to same region
             // set this offset to the value of another field: two parsers read the same bytes
-            // with different type assumptions (e.g. VolumeID parser and CNRL parser both
-            // start at the same location, interpreting the same bytes as different structures)
-            
+            // with different type assumptions (ex. VolumeID parser and CNRL parser both start
+            // at the same location, interpreting the same bytes with different type assumptions)
+            if(field_count < 2) break;
+            int idx2;
+            do{
+                idx2 = rand() % field_count;
+            } while(offset_fields[idx2] == target); // make sure not the same field
+            *target = *offset_fields[idx2];
             break;
         }
 
         case MUTATE_OFFSET_WITHIN_HEADER:{
             // offset lands inside the structure's own fixed-size header:
             // parser expects a string or substructure but reads size/flags/offset bytes instead.
-            // LinkInfo header occupies 0x00–0x1B (standard) or 0x00–0x23 (with unicode offsets).
+            // LinkInfo header occupies 0x00–0x1B (standard) or 0x00–0x23 (unicode offsets).
             // CNRL header occupies 0x00–0x13. For PIDL indices, small values address
             // the first items in the IDList or fall below item_count entirely.
             uint32_t header_positions[] = {0, 1, 2, 4, 8, 0x0C, 0x10, 0x14, 0x18};
