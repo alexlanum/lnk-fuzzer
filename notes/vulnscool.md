@@ -116,3 +116,8 @@ Specifically, the first child segment offset pointed to the `SHITEMID` in the Li
 The `SpecialFolderDataBlock` set `CSIDL_CONTROLS`and the `KnownFolderDataBlock` set the Control Panel `KNOWNFOLDERID` GUID. Both pointed to Control Panel to reinforce the namespace context switch.
 
 Microsoft fixed this by hardening ExtraData block processing.
+
+The CVE-2017-8464 attack surface is covered across three operators working together:
+- `MUTATE_EXTRA_INJECT` — inject SpecialFolderDataBlock/KnownFolderDataBlock with unexpected folder IDs or GUIDs
+- `MUTATE_OFFSET_ZERO`/`PAST_EOF`/`DESYNC` — corrupt the PIDL index offset inside those blocks so they point to wrong items
+- `apply_specialfolder` / `apply_knownfolder` — corrupt the SpecialFolderID and KnownFolderID values directly (these are your upcoming `GROUP_SPECIALFOLDER` and `GROUP_KNOWNFOLDER` operators)

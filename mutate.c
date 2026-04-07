@@ -1049,6 +1049,96 @@ static void apply_offsets(MutationOperator op, LNKGeneratorState* state){
 
 // GROUP_EXTRA_SEQ ExtraData block ordering/presence
 static void apply_extra_seq(MutationOperator op, LNKGeneratorState* state){
+    // ExtraData is a list of blocks parsed by SHReadDataBlockList.
+    //  . BlockSize > 0xFFFF: seek backward in stream, silently terminate loop
+    //  . BlockSize < 8: terminate loop
+    // valid range [8, 0xFFFF] -> IsValidDataBlock -> SHAddDataBlock
+    // blocks are found by signature via SHFindDataBlock
+    // order shouldn't atter per spec, but implementations may assume specific ordering/uniqueness
+    ExtraDataState* extra = &state->extradata;
+    switch(op){
+        case MUTATE_EXTRA_REORDER_BLOCKS:{
+            // swap two blocks, test if any code assumes specific ordering
+            // ex. TrackerDataBlock before PropertyStoreDataBlock
+            if(extra->block_count < 2) break;
+            int a = rand() % extra->block_count;
+            int b;
+            do{
+                b = rand() % extra->block_count;
+            } while(b == a); // make sure a and b not the same block
+            ExtraDataBlock tmp = extra->blocks[a];
+            extra->blocks[a] = extra->blocks[b];
+            extra->blocks[b] = tmp;
+            break;
+        }
+
+        case MUTATE_EXTRA_REMOVE_BLOCK:{
+            // remove a block from the list, tests if code handles missing blocks
+            // that SHFindDataBlock returns NULL for. removing SpecialFolderDataBlock
+            // or KnownFolderDataBlock changes namespace resolution context
+            if(extra->block_count < 1) break;
+            int idx = rand() % extra->block_count;
+            free(extra->blocks[idx].data);
+            for(int i = idx; i < extra->block_count - 1; i++)
+                extra->blocks[i] = extra->blocks[i + 1]; // shift every block after the removed one left by one position to fill the gap
+            extra->block_count--;
+            break;
+        }
+
+        case MUTATE_EXTRA_DUPLICATE_BLOCK:{
+            // duplicate an ExtraData block in the list so there are two blocks with same signature
+            // SHFindDataBlock will return the first match
+            // tests if any code assumes uniqueness or processes both
+            if(extra->block_count < 1 || extra->block_count >= MAX_EXTRA_DATA_BLOCKS) break;
+            int src = rand() % extra->block_count;
+            ExtraDataBlock* s = &extra->blocks[src]; // random block
+            ExtraDataBlock* d = &extra->blocks[extra->block_count]; // end
+            d->size = s->size;
+            d->type = s->type;
+            int data_len = (s->size > 8) ? s->size - 8 : 0;
+            if(s->data && data_len > 0){
+                d->data = malloc(data_len);
+                memcpy(d->data, s->data, data_len);
+            } else{
+                d->data = NULL;
+            }
+            extra->block_count++;
+            break;
+        }
+
+        case MUTATE_EXTRA_INSERT_BLOCK:{
+            // inject an ExtraData block with a known signature that wasn't in the original.
+            // SpecialFolderDataBlock and KnownFolderDataBlock are high value:
+            //  CVE-2017-8464 used these to force namespace context switches.
+            //  Microsoft patched the specific Control Panel values, but the
+            //  mechanism (ExtraData influencing resolution context) still exists.
+            //  random folder IDs and GUIDs test if other context switches are
+            //  reachable through unhardened code paths.
+            if(extra->block_count >= MAX_EXTRA_DATA_BLOCKS) break;
+            ExtraDataBlock* block = &extra->blocks[extra->block_count];
+            memset(block, 0, sizeof(ExtraDataBlock));
+            ExtraDataType types[] = {
+                EXTRA_ENVIRONMENT, EXTRA_CONSOLE, EXTRA_TRACKER,
+                EXTRA_CONSOLE_FE, EXTRA_SPECIAL_FOLDER, EXTRA_DARWIN,
+                EXTRA_ICON_ENVIRONMENT, EXTRA_PROPERTY_STORE,
+                EXTRA_KNOWN_FOLDER, EXTRA_VISTA_IDLIST, EXTRA_SHIM,
+            };
+            block->type = types[rand() % 11];
+
+            int data_len = 8 + (rand() % 32); // 8 + 0-31 = 8-39 payload size after the header
+            // 8 minimum ensures enough bytes for handlers to start parsing
+            // 39 maximum keeps it small enough to pass SHReadDataBlockList validation (< 0xFFFF)
+            block->data = calloc(1, data_len);
+            for(int i = 0; i < data_len; i++)
+                block->data[i] = rand() & 0xFF; // fill payload w random stuff
+            block->size = 8 + data_len; // header + payload
+            extra->block_count++;
+            break;
+        }
+
+
+
+    }
 
 }
 
@@ -1064,6 +1154,7 @@ static void op_apply(MutationOperator op, LNKGeneratorState* state, LNKLayout* l
         case GROUP_PIDL:      apply_pidl(op, state);          break;
         case GROUP_OFFSETS:   apply_offsets(op, state);       break;
         case GROUP_EXTRA_SEQ: apply_extra_seq(op, state);     break;
+        case GROUP_EXTRA_HDR: apply_extra_hdr(op, state);     break;
         // add more...
 
         default: break;
