@@ -1169,7 +1169,102 @@ static void apply_extra_hdr(MutationOperator op, LNKGeneratorState* state){
     // MUTATE_BLOCK_SIZE_OVERFLOW,         // extends into next block
     // MUTATE_BLOCK_SIGNATURE_UNKNOWN,     // unrecognized signature
     // MUTATE_BLOCK_SIGNATURE_WRONG,       // valid signature on wrong block type
-    
+    ExtraDataState* extra = &state->extradata;
+    if(extra->block_count < 1) return;
+
+    int idx = rand() % extra->block_count;
+    ExtraDataBlock* block = &extra->blocks[idx];
+
+    switch(op){
+        case MUTATE_BLOCK_SIZE_ZERO:{
+            // size 0 is the normal terminator for SHReadDataBlockList
+            // paraer thinks the list ended early. blocks after this are never parsed
+            block->size = 0;
+            break;
+        }
+
+        case MUTATE_BLOCK_SIZE_UNDERFLOW:{
+            // block size < 8 terminates the SHReadDataBlockList loop
+            // parser stops walking and ignores remaining blocks
+            // values 1-7 test if the termination path handles partial
+            // header reads (size field exists but signature doesn't fit)
+            block->size = 1 + (rand() % 7);
+            break;
+        }
+
+        case MUTATE_BLOCK_SIZE_OVERFLOW:{
+            // size > 0xFFFF causes SHReadDataBlockList to seek backward
+            // in stream, silently terminates loop
+            int r = rand() % 100;
+            if(r < 40)
+                block->size = 0x10000;                      // past 0xFFFF boundary
+            else if(r < 70)
+                block->size = 0x10000 + (rand() % 0xF0000); // 64KB-1MB
+            else if(r < 85)
+                block->size = 0xFFFFFFFF;                   // max uint32
+            else
+                block->size = 0xFFFF;                       // exact boundary, valid or invalid
+            break;
+        }
+
+        case MUTATE_BLOCK_SIGNATURE_UNKNOWN:{
+            // unrecognized signature, IsValidDataBlock rejects the block
+            // tests if rejection path correctly skips the abID[] payload bytes
+            // or if the parser gets confused abt where the next block starts
+            int r = rand() % 100;
+            if(r < 40)
+                block->size = EXTRA_TERMINATOR; // maps to unknown signature in serializer
+            else if(r < 70)
+                block->type = rand() % 12;      // random type from the enum, might collide with real type
+            else
+                block->size = 8;                // valid size but unknown signature
+            break;
+        }
+
+        case MUTATE_BLOCK_SIGNATURE_WRONG:{
+            // valid signature paired with wrong block type
+            // 
+            // example:
+            //   swapping payload type to PropertyStore while having a 0xA0000003 BlockSignature
+            //   causes SHFindDataBlock to find and return a PropertyStore payload to CTracker::Load.
+            //   at this point. CTracker::Load reads fields under wrong assumptions.
+
+            if(extra->block_count == 1){
+                // only one ExtraData block.
+                // can't swap with another, so change its type
+                // to a different known type. the block's payload
+                // stays the same, but the serializer writes a dif
+                // signature. the handler for the new signature is
+                // given the original block's payload.
+                ExtraDataType types[] = {
+                    EXTRA_ENVIRONMENT, EXTRA_CONSOLE, EXTRA_TRACKER,
+                    EXTRA_CONSOLE_FE, EXTRA_SPECIAL_FOLDER, EXTRA_DARWIN,
+                    EXTRA_ICON_ENVIRONMENT, EXTRA_PROPERTY_STORE,
+                    EXTRA_KNOWN_FOLDER, EXTRA_VISTA_IDLIST, EXTRA_SHIM,
+                };
+                ExtraDataType new_type;
+                do{
+                    new_type = types[rand() % 11];
+                } while(new_type == block->type); // ensure different type
+                block->type = new_type;
+            } else{
+                // two or more ExtraData blocks.
+                // swap types between two blocks.
+                // both handlers get each other's payloads.
+                int other;
+                do{
+                    other = rand() % extra->block_count;
+                } while(other == idx); // ensure different block index
+                ExtraDataType tmp = block->type;
+                block->type = extra->blocks[other].type;
+                extra->blocks[other].type = tmp;
+            }
+            break;
+        }
+
+        default:
+            break;
+    }
 }
 
 // do mutation
