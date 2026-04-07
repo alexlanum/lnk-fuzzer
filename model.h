@@ -321,6 +321,7 @@ typedef struct {
 typedef struct {
     ExtraDataBlock blocks[MAX_EXTRA_DATA_BLOCKS];
     int block_count;
+    int has_terminator;
 } ExtraDataState;
 
 /**

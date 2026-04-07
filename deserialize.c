@@ -552,6 +552,9 @@ static int deserialize_extradata(const uint8_t* buf, size_t len, size_t* off, Ex
     if((extradata->block_count > 0))
         layout->has_extradata = 1;
 
+    // valid LNK files always have a terminator (< 8 block that breaks the while loop)
+    extradata->has_terminator = 1;
+    
     return 0;
 }
 

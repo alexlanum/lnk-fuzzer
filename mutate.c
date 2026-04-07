@@ -65,7 +65,6 @@ static MutationOperatorGroup op_to_group[MUTATE_COUNT] = {
     [MUTATE_EXTRA_REORDER_BLOCKS]               = GROUP_EXTRA_SEQ,
     [MUTATE_EXTRA_MISSING_TERMINATOR]           = GROUP_EXTRA_SEQ,
     [MUTATE_EXTRA_EARLY_TERMINATOR]             = GROUP_EXTRA_SEQ,
-    [MUTATE_EXTRA_DOUBLE_TERMINATOR]            = GROUP_EXTRA_SEQ,
 
     [MUTATE_BLOCK_SIZE_ZERO]                    = GROUP_EXTRA_HDR,
     [MUTATE_BLOCK_SIZE_UNDERFLOW]               = GROUP_EXTRA_HDR,
@@ -1136,14 +1135,41 @@ static void apply_extra_seq(MutationOperator op, LNKGeneratorState* state){
             break;
         }
 
+        case MUTATE_EXTRA_MISSING_TERMINATOR:{
+            // remove terminator, SHReadDataBlockList reads past the end
+            // of ExtraData into whatever follows in memory
+            extra->has_terminator = 0;
+            break;
+        }
 
-
+        case MUTATE_EXTRA_EARLY_TERMINATOR:{
+            // inject a block with size < 8 before the real blocks
+            // SHReadDataBlockList terminates loop early
+            if(extra->block_count < 1 || extra->block_count >= MAX_EXTRA_DATA_BLOCKS) break;
+            int pos = rand() % extra->block_count; // insert before this block
+            for(int i = extra->block_count; i > pos; i--)
+                extra->blocks[i] = extra->blocks[i - 1];
+            ExtraDataBlock* b = &extra->blocks[pos];
+            memset(b, 0, sizeof(ExtraDataBlock));
+            b->size = rand() % 8; // 0-7 size triggers loop termination
+            b->type = EXTRA_TERMINATOR;
+            b->data = NULL;
+            extra->block_count++;
+            break;
+        }
+        
+        default: break;
     }
-
 }
 
+// GROUP_EXTRA_HDR ExtraData block header corruption
 static void apply_extra_hdr(MutationOperator op, LNKGeneratorState* state){
-
+    // MUTATE_BLOCK_SIZE_ZERO,
+    // MUTATE_BLOCK_SIZE_UNDERFLOW,        // < 8, smaller than header
+    // MUTATE_BLOCK_SIZE_OVERFLOW,         // extends into next block
+    // MUTATE_BLOCK_SIGNATURE_UNKNOWN,     // unrecognized signature
+    // MUTATE_BLOCK_SIGNATURE_WRONG,       // valid signature on wrong block type
+    
 }
 
 // do mutation
