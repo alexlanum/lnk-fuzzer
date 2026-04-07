@@ -1213,11 +1213,13 @@ static void apply_extra_hdr(MutationOperator op, LNKGeneratorState* state){
             // or if the parser gets confused abt where the next block starts
             int r = rand() % 100;
             if(r < 40)
-                block->size = EXTRA_TERMINATOR; // maps to unknown signature in serializer
+                block->type = EXTRA_TERMINATOR; // maps to unknown signature in serializer
             else if(r < 70)
                 block->type = rand() % 12;      // random type from the enum, might collide with real type
-            else
-                block->size = 8;                // valid size but unknown signature
+            else{
+                block->type = EXTRA_TERMINATOR; // unknown signature
+                block->size = 8;                // but valid size
+            }
             break;
         }
 
