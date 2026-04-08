@@ -725,8 +725,6 @@ static int deserialize_extradata(const uint8_t* buf, size_t len, size_t* off, LN
     return 0;
 }
 
-
-
 /**
  * Core deserialization
  */
@@ -749,7 +747,7 @@ int deserialize_lnk(const uint8_t* buf, size_t len, LNKGeneratorState* state){
 
     // ExtraData (not flag controlled, read until null-term)
     if(off < len)
-        TRY(deserialize_extradata(buf, len, &off, &state->extradata, &state->core));
+        TRY(deserialize_extradata(buf, len, &off, state, &state->core));
 
     return 0;
 }

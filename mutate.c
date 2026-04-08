@@ -1269,6 +1269,11 @@ static void apply_extra_hdr(MutationOperator op, LNKGeneratorState* state){
     }
 }
 
+static void apply_propstore_set(MutationOperator op, LNKGeneratorState* state){
+    SerializedPropertyStore* propstore = &state->propstore;
+    if(propstore->storage_count < 1) return;
+}
+
 // do mutation
 static void op_apply(MutationOperator op, LNKGeneratorState* state, LNKLayout* layout){
     switch(op_to_group[op]){
@@ -1278,7 +1283,7 @@ static void op_apply(MutationOperator op, LNKGeneratorState* state, LNKLayout* l
         case GROUP_OFFSETS:       apply_offsets(op, state);       break;
         case GROUP_EXTRA_SEQ:     apply_extra_seq(op, state);     break;
         case GROUP_EXTRA_HDR:     apply_extra_hdr(op, state);     break;
-        case GROUP_PROPSTORE_SET: 
+        case GROUP_PROPSTORE_SET: apply_propstore_set(op, state); break;
         // add more...
 
         default: break;
