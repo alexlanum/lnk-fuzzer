@@ -496,22 +496,22 @@ static int deserialize_stringdata(const uint8_t* buf, size_t len, size_t* off, S
  * Each value (integer-named):
  *   [ValueSize:4][PropertyID:4][Reserved:1][TypedPropertyValue:var]
  *
- * Each value (string-named, FMTID_STRING_NAMED):
+ * Each value (string-named):
  *   [ValueSize:4][NameSize:4][Reserved:1][NameString:var][TypedPropertyValue:var]
  *
  * TypedPropertyValue:
  *   [vt:2][padding:2][value:var]
  */
  static int deserialize_propstore(const uint8_t* payload_data, uint32_t payload_len, SerializedPropertyStore* store){
-    size_t pos = 0;
+    size_t off = 0;
     store->storage_count = 0;
     store->has_terminator = 0;
 
     // walk storages
     //   [StorageSize:4][Version:4][FormatID:16]
-    while(pos + 4 <= payload_len){ // enough space to read storage_size
+    while(off + 4 <= payload_len){ // enough space to read storage_size
         uint32_t storage_size;
-        memcpy(&storage_size, payload_data + pos, 4);
+        memcpy(&storage_size, payload_data + off, 4);
 
         if(storage_size == 0){
             store->has_terminator = 1;
@@ -522,7 +522,7 @@ static int deserialize_stringdata(const uint8_t* buf, size_t len, size_t* off, S
         // storage_size includes itself, minimum: 4 + 4 + 16 = 24
         if(storage_size < 24) return -1;
         // storage claims to be bigger than the remaining payload data
-        if(pos + storage_size > payload_len) return -1;
+        if(off + storage_size > payload_len) return -1;
         // max storages per store (not a spec requirement, limit defined in model.h)
         if(store->storage_count >= 32) return -1;
 
@@ -531,14 +531,115 @@ static int deserialize_stringdata(const uint8_t* buf, size_t len, size_t* off, S
         storage->storage_size = storage_size;
 
         // 0x04 Version must be 0x53505331 ("1SPS")
-        if(pos + 8 > payload_len) return -1;
-        memcpy(&storage->version, payload_data + pos + 4, 4);
+        if(off + 8 > payload_len) return -1;
+        memcpy(&storage->version, payload_data + off + 4, 4);
 
         // 0x08 FormatID
-        if(pos + 24 > payload_len) return -1;
-        memcpy(storage->fmtid, payload_data + pos + 8, 16);
+        if(off + 24 > payload_len) return -1;
+        memcpy(storage->fmtid, payload_data + off + 8, 16);
+
+        // determine name scheme from fmtid
+        if(memcmp(storage->fmtid, FMTID_STRING_NAMED, 16) == 0){
+            storage->name_scheme = PROPVAL_STRING_NAMED;
+        } else{
+            storage->name_scheme = PROPVAL_INTEGER_NAMED;
+        }
+
+        // walk property values within this storage
+        // values start after the FormatID at offset 24 within the storage
+        size_t val_off = off + 24;
+        size_t storage_end = off + storage_size;
+        storage->value_count = 0;
+        storage->has_terminator = 0;
+
+        while(val_off + 4 <= storage_end){
+            uint32_t val_size;
+            memcpy(&val_size, payload_data + val_off, 4);
+
+            if(val_size == 0){
+                storage->has_terminator = 1;
+                break;
+            }
+
+            if(val_size < 9) return -1; // minimum: 4 (size) + 4 (id/name_size) + 1 (reserved)
+            if(val_off + val_size > storage_end) return -1;
+            if(storage->value_count >= 256) return -1; // not a spec-defined max, 256 gives generous space
+
+            SerializedPropertyValue* val = &storage->values[storage->value_count];
+            memset(val, 0, sizeof(SerializedPropertyValue));
+            val->name_scheme = storage->name_scheme;
+
+            if(storage->name_scheme == PROPVAL_INTEGER_NAMED){
+                SerializedPropertyValueInteger* iv = &val->integer_named;
+                // 0x00 ValueSize
+                iv->value_size = val_size;
+                // 0x04 PropertyID
+                if(val_off + 8 > storage_end) return -1;
+                memcpy(&iv->property_id, payload_data + val_off + 4, 4);
+                // 0x08 Reserved
+                if(val_off + 9 > storage_end) return -1;
+                memcpy(&iv->reserved, payload_data + val_off + 8, 1);
+                // 0x09 TypedPropertyValue [Type:2][Padding:2][Value:var]
+                size_t tpv_off = val_off + 9;
+                size_t tpv_len = val_size - 9; // the whole value entry minus ValueSize(4) + PropertyID(4) + Reserved(1)
+
+                if(tpv_off + 4 > storage_end) return -1;
+
+                memcpy(&iv->typed_value.vt, payload_data + tpv_off, 2);          // type
+                memcpy(&iv->typed_value.padding, payload_data + tpv_off + 2, 2); // padding
+
+                if(tpv_len > 4){
+                    uint32_t val_len = tpv_len - 4; // how many bytes of actual value data exist
+                    if(val_len > sizeof(iv->typed_value.value))
+                        val_len = sizeof(iv->typed_value.value);
+                    memcpy(iv->typed_value.value, payload_data + tpv_off + 4, val_len);
+                    iv->typed_value.value_len = val_len;
+                } else{
+                    iv->typed_value.value_len = 0; // VT_EMPTY / VT_NULL
+                }
+            } else{ // PROPVAL_STRING_NAMED
+                SerializedPropertyValueString* sv = &val->string_named;
+                sv->value_size = val_size;
+                // 0x04 NameSize
+                if(val_off + 8 > storage_end) return -1;
+                memcpy(&sv->name_size, payload_data + val_off + 4, 4);
+                // 0x08 Reserved
+                if(val_off + 9 > storage_end) return -1;
+                memcpy(&sv->reserved, payload_data + val_off + 8, 1);
+                // 0x09 NameString (length = name_size bytes)
+                size_t name_off = val_off + 9;
+                if(sv->name_size > sizeof(sv->name)) return -1;
+                if(name_off + sv->name_size > storage_end) return -1;
+                memcpy(sv->name, payload_data + name_off, sv->name_size);
+                // after variable name string TypedPropertyValue
+                size_t tpv_off = name_off + sv->name_size;
+                size_t tpv_end = val_off + val_size;
+
+                if(tpv_off + 4 > tpv_end) return -1;
+
+                memcpy(&sv->typed_value.vt, payload_data + tpv_off, 2);          // type
+                memcpy(&sv->typed_value.padding, payload_data + tpv_off + 2, 2); // padding
+
+                if(tpv_off + 4 <= tpv_end){
+                    uint32_t val_len = (uint32_t)(tpv_end - tpv_off - 4);
+                    if(val_len > sizeof(sv->typed_value.value))
+                        val_len = sizeof(sv->typed_value.value);
+                    memcpy(sv->typed_value.value, payload_data + tpv_off + 4, val_len);
+                    sv->typed_value.value_len = val_len;
+                } else{
+                    sv->typed_value.value_len = 0;
+                }
+            }
+            // iterate
+            storage->value_count++;
+            val_off += val_size;
+        }
+        // iterate
+        store->storage_count++;
+        off += storage_size;
     }
 
+    return 0;
  }
 
 /**
