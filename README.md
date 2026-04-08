@@ -2,7 +2,7 @@ Structure-aware mutation-based fuzzer for Windows Shell Link (.lnk) files, built
 
 This is a mutation engine that understands the internal structure of .lnk files and applies targeted corruptions to specific fields based on reverse engineering of the shell32 parsing code. It mutates fields at every layer of the format.
 
-The mutation operator scheduler uses two-level Thompson Sampling to learn which format regions and corruption strategies produce new code coverage, and favors productive operators over time.
+The mutation operator scheduler uses two-level Thompson Sampling to learn which format regions and corruption strategies produce new code coverage. Productive operators are favored over time.
 
 - `mutator.c` – AFL++ custom mutator interface + Thompson Sampling custom scheduler
 - `deserialize.c` – converts raw .lnk bytes into a `LNKGeneratorState` structure
