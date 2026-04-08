@@ -1270,8 +1270,21 @@ static void apply_extra_hdr(MutationOperator op, LNKGeneratorState* state){
 }
 
 static void apply_propstore_set(MutationOperator op, LNKGeneratorState* state){
-    SerializedPropertyStore* propstore = &state->propstore;
-    if(propstore->storage_count < 1) return;
+    SerializedPropertyStore* ps = &state->propstore;
+    if(ps->storage_count < 1) return;
+    // pick random storage, corrupt storage-level fields
+}
+
+static void apply_propstore_val(MutationOperator op, LNKGeneratorState* state){
+    SerializedPropertyStore* ps = &state->propstore;
+    if(ps->storage_count < 1) return;
+    // pick random storage, pick random value, corrupt value-level fields
+}
+
+static void apply_propstore_tpv(MutationOperator op, LNKGeneratorState* state){
+    SerializedPropertyStore* ps = &state->propstore;
+    if(ps->storage_count < 1) return;
+    // pick random storage, pick random value, corrupt TypedPropertyValue fields
 }
 
 // do mutation
