@@ -564,6 +564,12 @@ typedef struct {
     LinkInfoState    linkinfo;
     StringDataState  stringdata;
     ExtraDataState   extradata;
+
+    // parsed ExtraData block payloads
+    SerializedPropertyStore     propstore;
+    TrackerDataBlockPayload     tracker;
+    DarwinDataBlockPayload      darwin;
+    KnownFolderDataBlockPayload knownfolder;
 } LNKGeneratorState;
 
 #endif

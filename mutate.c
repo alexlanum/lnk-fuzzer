@@ -1272,12 +1272,13 @@ static void apply_extra_hdr(MutationOperator op, LNKGeneratorState* state){
 // do mutation
 static void op_apply(MutationOperator op, LNKGeneratorState* state, LNKLayout* layout){
     switch(op_to_group[op]){
-        case GROUP_FLAGS:     apply_flags(op, state);         break;
-        case GROUP_SIZES:     apply_sizes(op, state, layout); break;
-        case GROUP_PIDL:      apply_pidl(op, state);          break;
-        case GROUP_OFFSETS:   apply_offsets(op, state);       break;
-        case GROUP_EXTRA_SEQ: apply_extra_seq(op, state);     break;
-        case GROUP_EXTRA_HDR: apply_extra_hdr(op, state);     break;
+        case GROUP_FLAGS:         apply_flags(op, state);         break;
+        case GROUP_SIZES:         apply_sizes(op, state, layout); break;
+        case GROUP_PIDL:          apply_pidl(op, state);          break;
+        case GROUP_OFFSETS:       apply_offsets(op, state);       break;
+        case GROUP_EXTRA_SEQ:     apply_extra_seq(op, state);     break;
+        case GROUP_EXTRA_HDR:     apply_extra_hdr(op, state);     break;
+        case GROUP_PROPSTORE_SET: 
         // add more...
 
         default: break;

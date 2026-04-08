@@ -484,13 +484,73 @@ static int deserialize_stringdata(const uint8_t* buf, size_t len, size_t* off, S
 }
 
 /**
+ * PropertyStore deserialization
+ * Parses the raw MS-PROPSTORE payload from a PropertyStoreDataBlock
+ * into the SerializedPropertyStore struct.
+ *
+ * Layout:
+ *   [StorageSize:4][Version:4][FormatID:16][Values...][Terminator:4]
+ *    ... same
+ *   [0x00000000] property store terminator
+ *
+ * Each value (integer-named):
+ *   [ValueSize:4][PropertyID:4][Reserved:1][TypedPropertyValue:var]
+ *
+ * Each value (string-named, FMTID_STRING_NAMED):
+ *   [ValueSize:4][NameSize:4][Reserved:1][NameString:var][TypedPropertyValue:var]
+ *
+ * TypedPropertyValue:
+ *   [vt:2][padding:2][value:var]
+ */
+ static int deserialize_propstore(const uint8_t* payload_data, uint32_t payload_len, SerializedPropertyStore* store){
+    size_t pos = 0;
+    store->storage_count = 0;
+    store->has_terminator = 0;
+
+    // walk storages
+    //   [StorageSize:4][Version:4][FormatID:16]
+    while(pos + 4 <= payload_len){ // enough space to read storage_size
+        uint32_t storage_size;
+        memcpy(&storage_size, payload_data + pos, 4);
+
+        if(storage_size == 0){
+            store->has_terminator = 1;
+            break;
+        }
+
+        // 0x00 StorageSize
+        // storage_size includes itself, minimum: 4 + 4 + 16 = 24
+        if(storage_size < 24) return -1;
+        // storage claims to be bigger than the remaining payload data
+        if(pos + storage_size > payload_len) return -1;
+        // max storages per store (not a spec requirement, limit defined in model.h)
+        if(store->storage_count >= 32) return -1;
+
+        SerializedPropertyStorage* storage = &store->storages[store->storage_count];
+        memset(storage, 0, sizeof(SerializedPropertyStorage));
+        storage->storage_size = storage_size;
+
+        // 0x04 Version must be 0x53505331 ("1SPS")
+        if(pos + 8 > payload_len) return -1;
+        memcpy(&storage->version, payload_data + pos + 4, 4);
+
+        // 0x08 FormatID
+        if(pos + 24 > payload_len) return -1;
+        memcpy(storage->fmtid, payload_data + pos + 8, 16);
+    }
+
+ }
+
+/**
  * ExtraData deserialization
  * ExtraData block header:
  *  . DWORD BlockSize;
  *  . DWORD BlockSignature;
  *  . BYTE Payload[BlockSize - 8]
  */
-static int deserialize_extradata(const uint8_t* buf, size_t len, size_t* off, ExtraDataState* extradata, LNKLayout* layout){
+static int deserialize_extradata(const uint8_t* buf, size_t len, size_t* off, LNKGeneratorState* state, LNKLayout* layout){
+    ExtraDataState* extradata = &state->extradata;
+
     // Blocks are passed to SHReadDataBlockList, which selectively handles all block signatures and size parsing.
     while(*off + 4 <= len){ // prevent reading past EOF
         // DWORD BlockSize
@@ -541,7 +601,13 @@ static int deserialize_extradata(const uint8_t* buf, size_t len, size_t* off, Ex
     // All other blocks are stored but not interpreted during load (deserialization).
     for(int i = 0; i < extradata->block_count; i++){
         switch(extradata->blocks[i].type){
-            case EXTRA_PROPERTY_STORE: layout->has_propstore_block   = 1; break;
+            case EXTRA_PROPERTY_STORE:{
+                layout->has_propstore_block = 1;
+                if(extradata->blocks[i].data && extradata->blocks[i].size > 8){
+                    deserialize_propstore(extradata->blocks[i].data, extradata->blocks[i].size - 8, &state->propstore);
+                }
+                break;
+            }
             case EXTRA_DARWIN:         layout->has_darwin_block      = 1; break;
             case EXTRA_TRACKER:        layout->has_tracker_block     = 1; break;
             case EXTRA_KNOWN_FOLDER:   layout->has_knownfolder_block = 1; break;
@@ -557,6 +623,8 @@ static int deserialize_extradata(const uint8_t* buf, size_t len, size_t* off, Ex
     
     return 0;
 }
+
+
 
 /**
  * Core deserialization
