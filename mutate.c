@@ -1269,18 +1269,92 @@ static void apply_extra_hdr(MutationOperator op, LNKGeneratorState* state){
     }
 }
 
+// Serialized Property Storage
 static void apply_propstore_set(MutationOperator op, LNKGeneratorState* state){
     SerializedPropertyStore* ps = &state->propstore;
     if(ps->storage_count < 1) return;
-    // pick random storage, corrupt storage-level fields
+
+    // pick random storage
+    int idx = rand() % ps->storage_count;
+    SerializedPropertyStorage* storage = &ps->storages[idx];
+
+    // MUTATE_PROPSTORE_STORAGE_SIZE_ZERO,         // treated as terminator — early exit
+    // MUTATE_PROPSTORE_STORAGE_SIZE_UNDERFLOW,    // < 24, smaller than header
+    // MUTATE_PROPSTORE_STORAGE_SIZE_DESYNC,       // inconsistent with actual content
+    // MUTATE_PROPSTORE_STORAGE_SIZE_128MB,        // pushes total over 128MB limit
+    // MUTATE_PROPSTORE_VERSION_WRONG,             // != 0x53505331
+    // MUTATE_PROPSTORE_FORMAT_ID_RANDOM,          // unknown GUID
+    // MUTATE_PROPSTORE_FORMAT_ID_STRING_NAMED,    // force string-named FMTID
+    // MUTATE_PROPSTORE_NAMING_MISMATCH,           // string FMTID but integer values, or vice versa
+    // MUTATE_PROPSTORE_DUPLICATE_FORMAT_ID,       // two storages with same FMTID
+    // MUTATE_PROPSTORE_MISSING_TERMINATOR,        // no 0x00000000 at end of store
+    // MUTATE_PROPSTORE_EARLY_TERMINATOR,          // terminator before last storage
+
+    switch(op){
+        case MUTATE_PROPSTORE_STORAGE_SIZE_ZERO:{
+            // SetPropertyStorage walks: while(chunkSize != 0){ pStorage += chunkSize; }
+            // zero terminates the walk early, storages after this are never processed
+            storage->storage_size = 0; // treated as terminator, early exit
+            break;
+        }
+
+        case MUTATE_PROPSTORE_STORAGE_SIZE_UNDERFLOW:{
+            // minimum valid storage is 24 bytes (StorageSize + Version + FormatID)
+            // values < 24 mean the parser can't read the full header
+            storage->storage_size = 1 + (rand() % 23); // 1-23 (smaller than header)
+            break;
+        }
+
+        case MUTATE_PROPSTORE_STORAGE_SIZE_DESYNC:{
+            
+        }
+
+        case MUTATE_PROPSTORE_STORAGE_SIZE_128MB:{
+            
+        }
+
+        case MUTATE_PROPSTORE_VERSION_WRONG:{
+            
+        }
+
+        case MUTATE_PROPSTORE_FORMAT_ID_RANDOM:{
+            
+        }
+
+        case MUTATE_PROPSTORE_FORMAT_ID_STRING_NAMED:{
+            
+        }
+
+        case MUTATE_PROPSTORE_NAMING_MISMATCH:{
+            
+        }
+
+        case MUTATE_PROPSTORE_DUPLICATE_FORMAT_ID:{
+            
+        }
+
+        case MUTATE_PROPSTORE_EARLY_TERMINATOR:{
+            
+        }
+
+
+        case MUTATE_PROPSTORE_MISSING_TERMINATOR:{
+            
+        }
+
+    }
+    
+
 }
 
+// Serialized Property Value
 static void apply_propstore_val(MutationOperator op, LNKGeneratorState* state){
     SerializedPropertyStore* ps = &state->propstore;
     if(ps->storage_count < 1) return;
     // pick random storage, pick random value, corrupt value-level fields
 }
 
+// TypedPropertyValue VARTYPE/padding
 static void apply_propstore_tpv(MutationOperator op, LNKGeneratorState* state){
     SerializedPropertyStore* ps = &state->propstore;
     if(ps->storage_count < 1) return;
@@ -1297,6 +1371,8 @@ static void op_apply(MutationOperator op, LNKGeneratorState* state, LNKLayout* l
         case GROUP_EXTRA_SEQ:     apply_extra_seq(op, state);     break;
         case GROUP_EXTRA_HDR:     apply_extra_hdr(op, state);     break;
         case GROUP_PROPSTORE_SET: apply_propstore_set(op, state); break;
+        case GROUP_PROPSTORE_VAL: apply_propstore_val(op, state); break;
+        case GROUP_PROPSTORE_TPV: apply_propstore_tpv(op, state); break;
         // add more...
 
         default: break;
