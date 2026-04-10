@@ -1532,40 +1532,58 @@ static void apply_propstore_tpv(MutationOperator op, LNKGeneratorState* state){
     int val_idx = rand() % storage->value_count;
     SerializedPropertyValue* val = &storage->values[val_idx];
 
-    // MUTATE_PROPSTORE_VT_INVALID,                // undefined/gap VT value
-    // MUTATE_PROPSTORE_VT_BYREF,                  // VT_BYREF | base_type
-    // MUTATE_PROPSTORE_VT_VECTOR,                 // VT_VECTOR | base_type
-    // MUTATE_PROPSTORE_VT_STREAM,                 // VT_STREAM — IStream creation
-    // MUTATE_PROPSTORE_VT_VARIANT,                // VT_VARIANT — recursive parsing
-    // MUTATE_PROPSTORE_VT_RESERVED,               // VT_RESERVED — must not appear
-    // MUTATE_PROPSTORE_PADDING_NONZERO,           // TypedPropertyValue padding != 0
-    // MUTATE_PROPSTORE_FORCE_MISALIGN,            // craft sizes so valuePtr & 7 != 0
+    TypedPropertyValue* tpv;
+    if(val->name_scheme == PROPVAL_STRING_NAMED)
+        tpv = &val->string_named.typed_value;
+    else
+        tpv = &val->integer_named.typed_value;
 
     switch(op){
         case MUTATE_PROPSTORE_VT_INVALID:{
             // DeserializeHelper::Worker validates vt via CheckVarType() before dispatch.
-            // if CheckVarType passes, Worker uses a jump table to route to type-specific
-            // handlers. VT values 0x0B-0x10, 0x17-0x1B, and 0x27-0x3F invoke default handler.
-            // undefined VT values test:
-            //   . if CheckVarType rejects them
-            //   . if the default handler safely ignores them
-            //   . if VT_BYREF (bit 14) bypasses CheckVarType
-
-            // [VT_DECIMAL 0x000E][UNASSIGNED GAP 0x000F-0xFFFF][VT_I1 0x0010]
-            
+            // if CheckVarType passes, Worker uses a jump table to route to type-specific handlers.
+            // CheckVarType only accepts base types (vt & 0xFFF):
+            //   0x00-0x0E (VT_EMPTY through VT_DECIMAL)
+            //   0x10-0x1F (VT_I1 through VT_LPWSTR)
+            //   0x24-0x26 (VT_RECORD, VT_INT_PTR, VT_UINT_PTR)
+            //   0x40-0x49 (VT_FILETIME through VT_VERSIONED_STREAM)
+            // rejects: negative (bit 15), VT_VECTOR|VT_ARRAY together, everything else.
+            // 
+            // tests for rejection cleanup:
+            //   rejection path in CheckVarType
+            //   error handling in Worker
             uint16_t invalid_vartypes[] = {
-                0x000F,                         // [VT_DECIMAL]          [0x000F]        [VT_I1]
-                0x0020, 0x0021, 0x0022, 0x0023, // [VT_LPWSTR]           [0x0020-0x0023] [VT_RECORD]
-                0x0027, 0x0028, 0x0030,         // [VT_UINT_PTR]         [0x0027-0x0030] [VT_FILETIME]
-                0x004A, 0x004B, 0x00FF,         // [VT_VERSIONED_STREAM] [0x004A-0x0FFE] []
-                0x0100, 0x0200, 0x0FFF,         // mid-range undefined
-                0xFFFF,                         // VT_ILLEGAL sentinel
+                0x000F,                         // gap: VT_DECIMAL+1, only gap inside the low range
+                0x0020, 0x0021, 0x0022, 0x0023, // gap: after VT_LPWSTR
+                0x0027, 0x0028, 0x0030,         // gap: after VT_UINT_PTR
+                0x004A, 0x004B, 0x00FF,         // gap: after VT_VERSIONED_STREAM
+                0x0100, 0x0200, 0x0FFF,         // mid-range: no handler exists
             };
-
+            tpv->vt = invalid_vartypes[rand() % (sizeof(invalid_vartypes) / sizeof(invalid_vartypes[0]))];
             break;
         }
 
         case MUTATE_PROPSTORE_VT_BYREF:{
+            // attack vector
+            // CheckVarType does not check for VT_BYREF:
+            //   . a1 < 0 catches VT_RESERVED (0x8000) because int16 makes it negative
+            //   . but 0x4000 as int16 is positive (16384), passes the sign check
+            //   . base type (lower 12 bits) is whitelisted, passes the switch
+            //   . CheckVarType returns 0 (success)
+            // then in DeserializeHelper::Worker:
+            //   bt di, 0Eh  <-- tests bit 14 (VT_BYREF flag)
+            //   jb loc_...  <-- invokes BYREF handler
+            // the BYREF handler interprets value bytes as pointer-sized data
+            // this is the only modifier flag that passes CheckVarType and reaches
+            // a dedicated handler, VT_RESERVED, VT_VECTOR|VT_ARRAY etc. get caught,
+            // but VT_BYREF alone slips through.
+            uint16_t base_vartypes[] = {
+                VT_I2, VT_I4, VT_R4, VT_R8, VT_BSTR, VT_ERROR,
+                VT_BOOL, VT_I1, VT_UI1, VT_UI2, VT_UI4,
+                VT_I8, VT_UI8, VT_INT, VT_UINT,
+                VT_LPSTR, VT_LPWSTR,
+            };
+            tpv->vt = VT_BYREF | base_vartypes[rand() % (sizeof(base_vartypes) / sizeof(base_vartypes[0]))];
             break;
         }
 

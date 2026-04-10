@@ -660,7 +660,7 @@ struct PROPERTYKEY{
 }
 ```
 
-A Property Store inside a `.lnk` is a *serialized* representation of the Windows Property System, as a `.lnk` file is just bytes on disk. By serialized, I mean Windows converts the in-memory `IPropertyStore` (which contains `PROPERTYKEY` → `PROPVARIANT` pairs) into the MS-PROPSTORE binary format. That formatted binary stream is then embedded inside the `.lnk` as a payload inside the `PropertyStoreDataBlock` block.
+A Property Store inside a `.lnk` is a *serialized* representation of the Windows Property System, as a `.lnk` file is just bytes on disk. By serialized, I mean Windows converts the in-memory `IPropertyStore` (which contains `PROPERTYKEY` -> `PROPVARIANT` pairs) into the MS-PROPSTORE binary format. That formatted binary stream is then embedded inside the `.lnk` as a payload inside the `PropertyStoreDataBlock` block.
 
 
 
