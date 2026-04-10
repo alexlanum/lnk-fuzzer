@@ -1269,26 +1269,14 @@ static void apply_extra_hdr(MutationOperator op, LNKGeneratorState* state){
     }
 }
 
-// Serialized Property Storage
+// Serialized Property Storage (property set within property store)
 static void apply_propstore_set(MutationOperator op, LNKGeneratorState* state){
     SerializedPropertyStore* ps = &state->propstore;
     if(ps->storage_count < 1) return;
 
-    // pick random storage
+    // pick random storage, mutate storage-level fields
     int idx = rand() % ps->storage_count;
     SerializedPropertyStorage* storage = &ps->storages[idx];
-
-    // MUTATE_PROPSTORE_STORAGE_SIZE_ZERO,         // treated as terminator — early exit
-    // MUTATE_PROPSTORE_STORAGE_SIZE_UNDERFLOW,    // < 24, smaller than header
-    // MUTATE_PROPSTORE_STORAGE_SIZE_DESYNC,       // inconsistent with actual content
-    // MUTATE_PROPSTORE_STORAGE_SIZE_128MB,        // pushes total over 128MB limit
-    // MUTATE_PROPSTORE_VERSION_WRONG,             // != 0x53505331
-    // MUTATE_PROPSTORE_FORMAT_ID_RANDOM,          // unknown GUID
-    // MUTATE_PROPSTORE_FORMAT_ID_STRING_NAMED,    // force string-named FMTID
-    // MUTATE_PROPSTORE_NAMING_MISMATCH,           // string FMTID but integer values, or vice versa
-    // MUTATE_PROPSTORE_DUPLICATE_FORMAT_ID,       // two storages with same FMTID
-    // MUTATE_PROPSTORE_MISSING_TERMINATOR,        // no 0x00000000 at end of store
-    // MUTATE_PROPSTORE_EARLY_TERMINATOR,          // terminator before last storage
 
     switch(op){
         case MUTATE_PROPSTORE_STORAGE_SIZE_ZERO:{
@@ -1306,52 +1294,231 @@ static void apply_propstore_set(MutationOperator op, LNKGeneratorState* state){
         }
 
         case MUTATE_PROPSTORE_STORAGE_SIZE_DESYNC:{
-            
+            // StorageSize is the skip distance to the next storage entry in the store.
+            //
+            // CMemPropStore::SetPropertyStorage:
+            //   ULONG chunkSize = *(ULONG*)pStorage; <-- READS StorageSize
+            //   computedSize = 4;
+            //   pStorage += chunkSize;               <-- LANDS AT WRONG POS
+            //   computedSize += chunkSize;
+            //   chunkSize = *(ULONG*)pStorage;       <-- READS MUTATED BYTES AS NEXT StorageSize
+            //
+            // If chunkSize is wrong, pStorage += chunkSize jumps to the wrong byte offset.
+            // Then *(ULONG*)pStorage reads whatever 4 bytes are at that wrong position as
+            // the next storage's StorageSize. Those bytes could be anything. The loop keeps
+            // walking with corrupted positions, accumulating a wrong computedSize, which
+            // gets passed to CoTaskMemAlloc & memcpy.
+            int r = rand() % 100;
+            if(r < 50)
+                storage->storage_size += (rand() % 16) - 8; // small drift +/- 8, lands nearby in the next storage's header
+            else if(r < 80)
+                storage->storage_size = 24 + (rand() % 32); // assign a size that is >= 24 but is likely shorter than the actual storage content
+            else
+                storage->storage_size = storage->storage_size / 2; // half the actual size
+            break;
         }
 
         case MUTATE_PROPSTORE_STORAGE_SIZE_128MB:{
-            
+            // CMemPropStore::SetPropertyStorage rejects if computedSize > 0x08000000 (128MB)
+            // one below the boundary passes the check, then CoTaskMemAlloc tries to alloc ~128MB
+            // may fail and return NULL
+            int r = rand() % 100;
+            if(r < 60)
+                storage->storage_size = 0x07FFFFFF; // 1 below boundary, passes check, massive alloc
+            else
+                storage->storage_size = 0x08000001; // 1 past boundary, fails check, tests rejection cleanup
+            break;
         }
 
         case MUTATE_PROPSTORE_VERSION_WRONG:{
-            
+            // version must be 0x53505331 ("1SPS")
+            // tests s_ValidateStorage rejection cleanup
+            int r = rand() % 100;
+            if(r < 30)
+                storage->version = 0; // zero
+            else if(r < 60)
+                storage->version = 0x53505332; // "2SPS" off by one
+            else if(r < 80)
+                storage->version = rand(); // random
+            else
+                storage->version = 0x53505331 ^ (1 << (rand() % 32)); // single bit flip
+            break;
         }
 
         case MUTATE_PROPSTORE_FORMAT_ID_RANDOM:{
-            
+            // unknown FormatID, no property schema registered for it
+            // parser may fail to find handlers or fall through to default
+            for(int i = 0; i < 16; i++)
+                storage->fmtid[i] = rand() & 0xFF;
+            break;
         }
 
         case MUTATE_PROPSTORE_FORMAT_ID_STRING_NAMED:{
-            
+            // force FMTID to string-named. if values were serialized as
+            // integer-named, parser reads PropertyID as NameSize: type confusion
+            if(storage->name_scheme == PROPVAL_STRING_NAMED) break;
+            memcpy(storage->fmtid, FMTID_STRING_NAMED, 16);
+            storage->name_scheme = PROPVAL_STRING_NAMED;
+            // intentionally don't convert the values: mismatch
+            break;
         }
 
         case MUTATE_PROPSTORE_NAMING_MISMATCH:{
-            
+            // flip name scheme without changing FMTID
+            // values will be parsed with the wrong format:
+            //   integer-named reads [ValueSize][PropertyID][Reserved][TPV]
+            //   string-named reads [ValueSize][NameSize][Reserved][NameString][TPV]
+            if(storage->name_scheme == PROPVAL_INTEGER_NAMED)
+                storage->name_scheme = PROPVAL_STRING_NAMED;
+            else
+                storage->name_scheme = PROPVAL_INTEGER_NAMED;
+            break;
         }
 
         case MUTATE_PROPSTORE_DUPLICATE_FORMAT_ID:{
-            
+            // two storages with same FMTID, spec says FMTID must be unique
+            // tests if the parser handles dupes: overwrites, merges, or crashes
+            if(ps->storage_count < 2) break;
+            int other;
+            do{
+                other = rand() % ps->storage_count;
+            } while(other == idx);
+            memcpy(storage->fmtid, ps->storages[other].fmtid, 16);
+            break;
         }
 
         case MUTATE_PROPSTORE_EARLY_TERMINATOR:{
-            
+            // set a middle storage's size to 0, terminates the walk early
+            // storages after it are never processed
+            if(ps->storage_count < 2) break;
+            int middle = rand() % (ps->storage_count - 1); // not the last one
+            ps->storages[middle].storage_size = 0;
+            break;
         }
-
 
         case MUTATE_PROPSTORE_MISSING_TERMINATOR:{
-            
+            // remove the store-level terminator (StorageSize == 0)
+            // CMemPropStore::SetPropertyStorage walks until chunkSize == 0
+            // without terminator, it reads past the store into whatever follows
+            ps->has_terminator = 0;
+            break;
         }
 
+        default:
+            break;
     }
-    
-
 }
 
 // Serialized Property Value
 static void apply_propstore_val(MutationOperator op, LNKGeneratorState* state){
     SerializedPropertyStore* ps = &state->propstore;
     if(ps->storage_count < 1) return;
-    // pick random storage, pick random value, corrupt value-level fields
+
+    // pick random value in a random storage, mutate value-level fields
+    int idx = rand() % ps->storage_count;
+    SerializedPropertyStorage* storage = &ps->storages[idx];
+    int val_idx = rand() % storage->value_count;
+    SerializedPropertyValue* val = &storage->values[val_idx];
+    
+    // MUTATE_PROPSTORE_DUPLICATE_PID,             // duplicate property ID in same storage
+    // MUTATE_PROPSTORE_RESERVED_NONZERO,          // reserved byte != 0x00
+    // MUTATE_PROPSTORE_MISSING_VALUE_TERMINATOR,  // no 0x00000000 at end of storage
+
+    switch(op){
+        case MUTATE_PROPSTORE_VALUE_SIZE_ZERO:{
+            // GetValue walks values:
+            // 
+            //   while(*(ULONG*)prop != 0)
+            //      prop += entry->cbProp; <-- cbProp is ValueSize
+            // 
+            // if ValueSize is 0, prop will read 0 and think its the terminator.
+            // so remaining properties in this storage will be skipped.
+            // tests whether validation (s_ValidateStorage) and parsing (GetValue)
+            // handle zero ValueSize the same way. If one keeps walking with ValueSize 0,
+            // but the other treats it as terminator and stops: misaligned read.
+            if(storage->name_scheme == PROPVAL_STRING_NAMED)
+                val->string_named.value_size = 0;
+            else
+                val->integer_named.value_size = 0;
+            break;
+        }
+
+        case MUTATE_PROPSTORE_VALUE_SIZE_UNDERFLOW:{
+            // ValueSize smaller than header (< 9)
+            if(storage->name_scheme == PROPVAL_STRING_NAMED)
+                val->string_named.value_size = 1 + (rand() % 8); // 1-9 (not 0, other op handles that)
+            else
+                val->integer_named.value_size = 1 + (rand() % 8);
+            break;
+        }
+
+        case MUTATE_PROPSTORE_VALUE_SIZE_DESYNC:{
+            // ValueSize is the skip distance to the next value entry in the storage
+            // wrong value makes GetValue land mid-field and read garbage as the next
+            // value's PropertyID/NameSize/TypedPropertyValue
+            int r = rand() % 100;
+            if(r < 50){
+                // small drift, -8 to +7 range
+                if(val->name_scheme == PROPVAL_STRING_NAMED)
+                    val->string_named.value_size += (rand() % 16) - 8;
+                else
+                    val->integer_named.value_size += (rand() % 16) - 8;
+            } else if(r < 80){
+                // passes < 9 check but wrong
+                if(val->name_scheme == PROPVAL_STRING_NAMED)
+                    val->string_named.value_size = 9 + (rand() % 32);
+                else
+                    val->integer_named.value_size = 9 + (rand() % 32);
+            } else{
+                // half actual size
+                if(val->name_scheme == PROPVAL_STRING_NAMED)
+                    val->string_named.value_size /= 2;
+                else
+                    val->integer_named.value_size /= 2;
+            }
+            break;
+        }
+
+        case MUTATE_PROPSTORE_DUPLICATE_PID:{
+            // PropertyID must be unique within a storage according to spec
+            // duplicate PID means two values claim to be the same property
+            // GetValue walks until it finds a matching PID and returns
+            // tests whether the second duplicate causes issues during
+            // materialization, enumeration, or deletion
+            if(storage->value_count < 2) break;
+            if(storage->name_scheme == PROPVAL_STRING_NAMED) break; // PIDs are for integer-named only
+            int a = rand() % storage->value_count;
+            int b;
+            do{
+                b = rand() % storage->value_count;
+            } while(b == a);
+            storage->values[b].integer_named.property_id = storage->values[a].integer_named.property_id;
+            break;
+        }
+
+        case MUTATE_PROPSTORE_RESERVED_NONZERO:{
+            // reserved byte must be 0x00 according to spec
+            // tests if any parser uses this byte as a flag, index, or size
+            uint8_t reserved = 1 + (rand() % 255);
+            if(val->name_scheme == PROPVAL_STRING_NAMED)
+                val->string_named.reserved = reserved;
+            else
+                val->integer_named.reserved = reserved;
+            break;
+        }
+
+        case MUTATE_PROPSTORE_MISSING_VALUE_TERMINATOR:{
+            // each storage's value list ends with ValueSize == 0
+            // GetValue walks: while(*(ULONG*)prop != 0)
+            // removing the terminator means the walker reads past the value
+            // list into the next storage's header or past the store entirely.
+            storage->has_terminator = 0;
+            break;
+        }
+
+        default:
+            break;
+    }
 }
 
 // TypedPropertyValue VARTYPE/padding
