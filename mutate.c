@@ -1588,30 +1588,101 @@ static void apply_propstore_tpv(MutationOperator op, LNKGeneratorState* state){
         }
 
         case MUTATE_PROPSTORE_VT_VECTOR:{
+            // VT_VECTOR (0x1000) triggers count-prefixed array parsing in DeserializeHelper::Worker.
+            // CheckVarType allows it: 0x1000 | base_type is positive, and the VT_VECTOR|VT_ARRAY check
+            // only rejects when both bits are set. VT_VECTOR alone passes.
+            // Worker reads a count from value bytes, allocates count * element_size,
+            // then loops reading elements of the vector.
+            // corrupted count with small buffer = OOB read
+            // corrupted element_size with large count = int overflow in allocation
+            uint16_t base_types[] = {
+                VT_I2, VT_I4, VT_R4, VT_R8, VT_BSTR,
+                VT_BOOL, VT_UI1, VT_UI4, VT_I8, VT_UI8,
+                VT_LPSTR, VT_LPWSTR, VT_FILETIME, VT_CLSID,
+                VT_VARIANT, // VT_VECTOR | VT_VARIANT = array of nested variants
+            };
+            tpv->vt = VT_VECTOR | base_types[rand() % (sizeof(base_types) / sizeof(base_types[0]))];
             break;
         }
 
         case MUTATE_PROPSTORE_VT_STREAM:{
+            // VT_STREAM (0x42), VT_STORAGE (0x43), VT_STREAMED_OBJECT (0x44),
+            // VT_STORED_OBJECT (0x45) all pass CheckVarType (cases 66-69).
+            // StgDeserializePropVariant pre-checks 0x43-0x46 before Worker:
+            //   lea eax, [rcx-43h]
+            //   test eax, 0FFFFFFF9h
+            //   jz loc_...  ← separate handler for storage types
+            // these types trigger COM IStream/IStorage creation from value bytes.
+            // the separate handler may create COM objects from attacker-controlled data.
+            uint16_t stream_types[] = {
+                VT_STREAM, VT_STORAGE, VT_STREAMED_OBJECT, VT_STORED_OBJECT,
+            };
+            tpv->vt = stream_types[rand() % 4];
             break;
         }
 
         case MUTATE_PROPSTORE_VT_VARIANT:{
+            // VT_VARIANT (0x0C) passes CheckVarType (case 12).
+            // in Worker's first jump table (byte_18000C6B0), vt 0x0C maps to
+            // handler group 6 (default). but in the second jump table
+            // (byte_18000C734 / jpt_18000BF21), it maps to handler group 5
+            // which calls Worker recursively for nested PROPVARIANT parsing.
+            // crafted nesting depth could overflow the stack.
+            // crafted inner vt could reach handlers the outer CheckVarType
+            // wouldn't normally allow.
+            tpv->vt = VT_VARIANT;
             break;
         }
 
         case MUTATE_PROPSTORE_VT_RESERVED:{
+            // VT_RESERVED (0x8000) — bit 15 set.
+            // CheckVarType catches it: a1 < 0 (int16 sign check).
+            // 0x8000 as int16 = -32768, rejected immediately.
+            // this only tests rejection cleanup, not parsing.
+            // kept because VT_RESERVED | base_type combinations might
+            // behave differently than pure 0x8000 in the error path.
+            uint16_t base_types[] = {
+                VT_I4, VT_BSTR, VT_BOOL, VT_LPWSTR, VT_FILETIME, VT_CLSID,
+            };
+            tpv->vt = VT_RESERVED | base_types[rand() % 6];
             break;
         }
 
         case MUTATE_PROPSTORE_PADDING_NONZERO:{
+            // TypedPropertyValue layout: [vt:2][padding:2][value:var]
+            // padding must be 0x0000 per spec.
+            // Worker reads the full DWORD at offset 0 of the SERIALIZEDPROPERTYVALUE:
+            //   mov edi, [rdx]  <-- reads vt + padding as one DWORD
+            // if any code masks with 0xFFFF to extract vt but another code path
+            // reads the full DWORD, the padding bytes become part of the type.
+            // 0x0001 in padding makes the DWORD 0x0001xxxx instead of 0x0000xxxx.
+            tpv->padding = 1 + (rand() % 0xFFFE); // 1-0xFFFF, guaranteed non-zero
             break;
         }
 
         case MUTATE_PROPSTORE_FORCE_MISALIGN:{
+            // GetValue checks: if((uintptr_t)valuePtr & 7) != 0
+            //   aligned: StgDeserializePropVariant called directly on blob pointer
+            //   misaligned: LocalAlloc temp buffer, memcpy, StgDeserializePropVariant on copy
+            // both paths call the same function but from different memory:
+            //   . aligned path operates on the original shared buffer (read-only expected)
+            //   . misaligned path operates on a private heap copy (read-write)
+            // if StgDeserializePropVariant writes back to the buffer (a bug), the
+            // aligned path corrupts shared state while the misaligned path doesn't.
+            // craft ValueSize so the NEXT value starts at a non-8-aligned offset.
+            if(val->name_scheme == PROPVAL_STRING_NAMED){
+                if((val->string_named.value_size & 7) == 0)
+                    val->string_named.value_size += 1 + (rand() % 7);
+            } else{
+                if((val->integer_named.value_size & 7) == 0)
+                    val->integer_named.value_size += 1 + (rand() % 7);
+            }
             break;
         }
-    }
 
+        default:
+            break;
+    }
 }
 
 // do mutation
