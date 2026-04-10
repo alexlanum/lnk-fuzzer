@@ -1414,7 +1414,7 @@ static void apply_propstore_val(MutationOperator op, LNKGeneratorState* state){
     SerializedPropertyStore* ps = &state->propstore;
     if(ps->storage_count < 1) return;
 
-    // pick random value in a random storage, mutate value-level fields
+    // pick random storage, pick randome value, mutate value-level fields
     int idx = rand() % ps->storage_count;
     SerializedPropertyStorage* storage = &ps->storages[idx];
     int val_idx = rand() % storage->value_count;
@@ -1525,7 +1525,75 @@ static void apply_propstore_val(MutationOperator op, LNKGeneratorState* state){
 static void apply_propstore_tpv(MutationOperator op, LNKGeneratorState* state){
     SerializedPropertyStore* ps = &state->propstore;
     if(ps->storage_count < 1) return;
+
     // pick random storage, pick random value, corrupt TypedPropertyValue fields
+    int idx = rand() % ps->storage_count;
+    SerializedPropertyStorage* storage = &ps->storages[idx];
+    int val_idx = rand() % storage->value_count;
+    SerializedPropertyValue* val = &storage->values[val_idx];
+
+    // MUTATE_PROPSTORE_VT_INVALID,                // undefined/gap VT value
+    // MUTATE_PROPSTORE_VT_BYREF,                  // VT_BYREF | base_type
+    // MUTATE_PROPSTORE_VT_VECTOR,                 // VT_VECTOR | base_type
+    // MUTATE_PROPSTORE_VT_STREAM,                 // VT_STREAM — IStream creation
+    // MUTATE_PROPSTORE_VT_VARIANT,                // VT_VARIANT — recursive parsing
+    // MUTATE_PROPSTORE_VT_RESERVED,               // VT_RESERVED — must not appear
+    // MUTATE_PROPSTORE_PADDING_NONZERO,           // TypedPropertyValue padding != 0
+    // MUTATE_PROPSTORE_FORCE_MISALIGN,            // craft sizes so valuePtr & 7 != 0
+
+    switch(op){
+        case MUTATE_PROPSTORE_VT_INVALID:{
+            // DeserializeHelper::Worker validates vt via CheckVarType() before dispatch.
+            // if CheckVarType passes, Worker uses a jump table to route to type-specific
+            // handlers. VT values 0x0B-0x10, 0x17-0x1B, and 0x27-0x3F invoke default handler.
+            // undefined VT values test:
+            //   . if CheckVarType rejects them
+            //   . if the default handler safely ignores them
+            //   . if VT_BYREF (bit 14) bypasses CheckVarType
+
+            // [VT_DECIMAL 0x000E][UNASSIGNED GAP 0x000F-0xFFFF][VT_I1 0x0010]
+            
+            uint16_t invalid_vartypes[] = {
+                0x000F,                         // [VT_DECIMAL]          [0x000F]        [VT_I1]
+                0x0020, 0x0021, 0x0022, 0x0023, // [VT_LPWSTR]           [0x0020-0x0023] [VT_RECORD]
+                0x0027, 0x0028, 0x0030,         // [VT_UINT_PTR]         [0x0027-0x0030] [VT_FILETIME]
+                0x004A, 0x004B, 0x00FF,         // [VT_VERSIONED_STREAM] [0x004A-0x0FFE] []
+                0x0100, 0x0200, 0x0FFF,         // mid-range undefined
+                0xFFFF,                         // VT_ILLEGAL sentinel
+            };
+
+            break;
+        }
+
+        case MUTATE_PROPSTORE_VT_BYREF:{
+            break;
+        }
+
+        case MUTATE_PROPSTORE_VT_VECTOR:{
+            break;
+        }
+
+        case MUTATE_PROPSTORE_VT_STREAM:{
+            break;
+        }
+
+        case MUTATE_PROPSTORE_VT_VARIANT:{
+            break;
+        }
+
+        case MUTATE_PROPSTORE_VT_RESERVED:{
+            break;
+        }
+
+        case MUTATE_PROPSTORE_PADDING_NONZERO:{
+            break;
+        }
+
+        case MUTATE_PROPSTORE_FORCE_MISALIGN:{
+            break;
+        }
+    }
+
 }
 
 // do mutation
