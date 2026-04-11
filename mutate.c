@@ -203,6 +203,101 @@ static int op_precondition(MutationOperator op, LNKGeneratorState* state, LNKLay
     }
 }
 
+// helper for MUTATE_STRUCTURE_DESYNC_FLAG
+// ensures an ExtraData block does not exist in order to mismatch with LinkFlags
+static void remove_extra_block(ExtraDataState* extra, ExtraDataType type){
+    for(int i = 0; i < extra->block_count; i++){
+        if(extra->blocks[i].type == type){
+            free(extra->blocks[i].data);
+            for(int j = i; j < extra->block_count - 1; j++)
+                extra->blocks[j] = extra->blocks[j + 1];
+            extra->block_count--;
+            return;
+        }
+    }
+}
+
+// GROUP_STRUCTURE
+static void apply_structure(MutationOperator op, LNKGeneratorState* state){
+    switch(op){
+        case MUTATE_STRUCTURE_ADD:{
+            // enable a section flag for a section that does not exist
+            // parser expects data that is not there
+            uint32_t flags[] = {
+                0x00000001, // HasLinkTargetIDList
+                0x00000002, // HasLinkInfo
+                0x00000004, // HasName
+                0x00000008, // HasRelativePath
+                0x00000010, // HasWorkingDir
+                0x00000020, // HasArguments
+                0x00000040, // HasIconLocation
+                0x00001000, // HasDarwinID
+                0x02000000, // PreferEnvironmentPath
+            };
+            state->header.link_flags |= flags[rand() % 9];
+        }
+
+        case MUTATE_STRUCTURE_REMOVE:{
+            // disable a section flag for a section that does not exist
+            // parser skips the section but the bytes are still in the file
+            // subsequent sections will be read from the wrong offset
+            uint32_t flags[] = {
+                0x00000001, // HasLinkTargetIDList
+                0x00000002, // HasLinkInfo
+                0x00000004, // HasName
+                0x00000008, // HasRelativePath
+                0x00000010, // HasWorkingDir
+                0x00000020, // HasArguments
+                0x00000040, // HasIconLocation
+                0x00001000, // HasDarwinID
+                0x02000000, // PreferEnvironmentPath
+            };
+            state->header.link_flags &= ~flags[rand() % 9];
+            break;
+        }
+
+        case MUTATE_STRUCTURE_DESYNC_FLAG:{
+            // set contradictory or orphan flags simultaneously
+            int r = rand() % 100;
+            if(r < 40){
+                // HasLinkInfo + ForceNoLinkInfo
+                // parser reads and deserializes LinkInfo entirely, then frees it.
+                // it is parsed before the discard. any bug in LinkInfo_LoadFromStream
+                // is reachable through this path even though the result gets freed.
+                state->header.link_flags |= 0x02;  // set HasLinkInfo
+                state->header.link_flags |= 0x100; // set ForceNoLinkInfo
+            } else if(r < 60){
+                // HasDarwinID (LinkFlags bit 0x1000) without DarwinDataBlock in ExtraData
+                // _LoadFromStream calls SHFindDataBlock(0xA0000006) which returns NULL
+                // tests null check on the result
+                state->header.link_flags |= 0x1000;
+                remove_extra_block(&state->extradata, EXTRA_DARWIN);
+            } else if(r < 75){
+                // PreferEnvironmentPath without EnvironmentVariableDataBlock
+                // resolution prefers env path but block is missing
+                state->header.link_flags |= 0x2000000;
+                remove_extra_block(&state->extradata, EXTRA_ENVIRONMENT);
+            } else if(r < 85){
+                // HasExpString without EnvironmentVariableDataBlock
+                state->header.link_flags |= 0x200;
+                remove_extra_block(&state->extradata, EXTRA_ENVIRONMENT);
+            } else if(r < 95){
+                // HasExpIcon without IconEnvironmentDataBlock
+                state->header.link_flags |= 0x4000;
+                remove_extra_block(&state->extradata, EXTRA_ICON_ENVIRONMENT);
+            } else{
+                // RunWithShimLayer without ShimDataBlock
+                state->header.link_flags |= 0x20000;
+                remove_extra_block(&state->extradata, EXTRA_SHIM);
+            }
+            break;
+        }
+
+        default:
+            break;
+    }
+}
+
 // GROUP_FLAGS (LinkFlags) mutation operators
 static void apply_flags(MutationOperator op, LNKGeneratorState* state){
     switch(op){
@@ -1688,6 +1783,7 @@ static void apply_propstore_tpv(MutationOperator op, LNKGeneratorState* state){
 // do mutation
 static void op_apply(MutationOperator op, LNKGeneratorState* state, LNKLayout* layout){
     switch(op_to_group[op]){
+        case GROUP_STRUCTURE:     apply_structure(op, state);     break;
         case GROUP_FLAGS:         apply_flags(op, state);         break;
         case GROUP_SIZES:         apply_sizes(op, state, layout); break;
         case GROUP_PIDL:          apply_pidl(op, state);          break;
