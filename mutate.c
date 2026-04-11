@@ -219,21 +219,22 @@ static void remove_extra_block(ExtraDataState* extra, ExtraDataType type){
 
 // GROUP_STRUCTURE
 static void apply_structure(MutationOperator op, LNKGeneratorState* state){
+    uint32_t flags[] = {
+        0x00000001, // HasLinkTargetIDList
+        0x00000002, // HasLinkInfo
+        0x00000004, // HasName
+        0x00000008, // HasRelativePath
+        0x00000010, // HasWorkingDir
+        0x00000020, // HasArguments
+        0x00000040, // HasIconLocation
+        0x00001000, // HasDarwinID
+        0x02000000, // PreferEnvironmentPath
+    };
+    
     switch(op){
         case MUTATE_STRUCTURE_ADD:{
             // enable a section flag for a section that does not exist
             // parser expects data that is not there
-            uint32_t flags[] = {
-                0x00000001, // HasLinkTargetIDList
-                0x00000002, // HasLinkInfo
-                0x00000004, // HasName
-                0x00000008, // HasRelativePath
-                0x00000010, // HasWorkingDir
-                0x00000020, // HasArguments
-                0x00000040, // HasIconLocation
-                0x00001000, // HasDarwinID
-                0x02000000, // PreferEnvironmentPath
-            };
             state->header.link_flags |= flags[rand() % 9];
         }
 
@@ -241,17 +242,6 @@ static void apply_structure(MutationOperator op, LNKGeneratorState* state){
             // disable a section flag for a section that does not exist
             // parser skips the section but the bytes are still in the file
             // subsequent sections will be read from the wrong offset
-            uint32_t flags[] = {
-                0x00000001, // HasLinkTargetIDList
-                0x00000002, // HasLinkInfo
-                0x00000004, // HasName
-                0x00000008, // HasRelativePath
-                0x00000010, // HasWorkingDir
-                0x00000020, // HasArguments
-                0x00000040, // HasIconLocation
-                0x00001000, // HasDarwinID
-                0x02000000, // PreferEnvironmentPath
-            };
             state->header.link_flags &= ~flags[rand() % 9];
             break;
         }
