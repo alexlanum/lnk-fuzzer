@@ -1115,7 +1115,11 @@ typedef struct tagPROPVARIANT {
 ```
 
 
-### SpecialFolderDataBlock
+
+## ExtraData: SpecialFolderDataBlock
+
+If the .lnk file targets one of the special system folders, this block contains the identifying information of that special folder. For example, special folders such as desktops, documents, or program files can be specified here.
+
 ```
 0x00  4  BlockSize          = 0x10
 0x04  4  BlockSignature     = 0xA0000005
@@ -1155,6 +1159,21 @@ Injecting a `SpecialFolderDataBlock` with different CSIDL values forces differen
 `MUTATE_SPECIALFOLDER_CSIDL_RANDOM` tests what happens with undocumented / invalid CSIDLs.
 `MUTATE_SPECIALFOLDER_OFFSET` sets the child segment offset to the wrong `SHITEMID` to see if the Shell will reinterpret arbitrary PIDL bytes through whatever namespace the folder ID specifies. For instance, the Control Panel handler might read filesystem directory bytes as a CPL descriptor.
 `MUTATE_SPECIALFOLDER_INJECT` does what CVE-2017-8464 did, adding an ExtraDataBlock to change resolution behavior.
+
+
+
+## ExtraData: DarwinDataBlock
+
+If the `.lnk` targets an application managed by Microsoft Installer (MSI), this block contains the relevant MSI information. This information defines the instructions for installing / uninstalling the application. The DarwinDataBlock is 788 bytes in size.
+
+```
+0x000  4    BlockSize        = 0x314
+0x004  4    BlockSignature   = 0xA0000006
+0x008  260  SpecialFolderID  = ASCII Darwin application ID
+0x268  520  Offset           = Unicode Darwin application ID
+```
+
+
 
 
 ## Resolution

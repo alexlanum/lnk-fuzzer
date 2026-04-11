@@ -230,7 +230,7 @@ static void apply_structure(MutationOperator op, LNKGeneratorState* state){
         0x00001000, // HasDarwinID
         0x02000000, // PreferEnvironmentPath
     };
-    
+
     switch(op){
         case MUTATE_STRUCTURE_ADD:{
             // enable a section flag for a section that does not exist
@@ -1770,6 +1770,114 @@ static void apply_propstore_tpv(MutationOperator op, LNKGeneratorState* state){
     }
 }
 
+// GROUP_DARWIN DarwinDataBlock
+// product code string that gets passed to the MSI subsystem
+static void apply_darwin(MutationOperator op, LNKGeneratorState* state){
+    // 0x000  4    BlockSize        = 0x314
+    // 0x004  4    BlockSignature   = 0xA0000006
+    // 0x008  260  SpecialFolderID  = ASCII Darwin application ID
+    // 0x268  520  Offset           = Unicode Darwin application ID
+    switch(op){
+        case MUTATE_DARWIN_FORMAT_STRING:{
+            // format string parsing attack.
+            // inject format specifiers into Darwin product code string.
+            // the Darwin product code string passes through shell32 -> msi.dll for resolution.
+            // 
+            // if any function in that chain uses printf, fprintf, sprintf, snprintf, vprintf,
+            // or vfprintf on the product code without sanitization:
+            //   %s reads from stack as string pointer  – info leak / crash
+            //   %n writes byte count to stack address  – arbitrary write
+            //   %x/%p leaks stack values               – info leak
+            //   %hhn writes single byte                – precise memory overwrite
+            //
+            //   large width/precision tests buffer limits in snprintf/vsnprintf
+            
+            const char* payloads[] = {
+                // stack walk, leak values
+                "%x%x%x%x%x%x%x%x",
+                "%p%p%p%p%p%p%p%p",
+                "%lx%lx%lx%lx%lx%lx",
+                "%llx%llx%llx%llx",
+
+                // arbitrary read, dereference stack as pointer
+                "%s%s%s%s%s%s%s%s%s%s",
+
+                // arbitrary write, write byte count to stack address
+                "%n%n%n%n",
+                "%hn%hn%hn%hn",
+                "%hhn%hhn%hhn%hhn",
+
+                // direct parameter access, target specific stack offsets
+                "%1$p%2$p%3$p%4$p%5$p%6$p%7$p%8$p",
+                "%1$s%2$s%3$s%4$s",
+                "%1$n%2$n%3$n%4$n",
+                "%1$hhn%2$hhn%3$hhn%4$hhn",
+
+                // width/precision, BOF in snprintf/vsnprintf
+                "%9999999x",
+                "%.9999999x",
+                "%1024d%1024d%1024d%1024d",
+
+                // combined, leak then write
+                "%s%n%s%n%s%n",
+                "AAAA%08x.%08x.%08x.%08x.%n",
+                "%1$p%2$p%3$p%4$p%5$n",
+            };
+
+            int count = sizeof(payloads) / sizeof(payloads[0]);
+            int r = rand() % count;
+
+            strncpy(state->darwin.darwin_data_ansi, payloads[r], 259);
+            state->darwin.darwin_data_ansi[259] = '\0';
+
+            for(int i = 0; payloads[r][i] && i < 259; i++){
+                state->darwin.darwin_data_unicode[i] = (wchar_t)payloads[r][i];
+            }
+            state->darwin.darwin_data_unicode[259] = L'\0';
+            break;
+        }
+
+        case MUTATE_DARWIN_OVERLONG:{
+            // populate every byte in the 260-byte buffer, no terminator.
+            // parser expects null-terminated string within 260 bytes.
+            // without terminator, strlen/strcpy reads past buffer into whatever follows in memory.
+            // tests if the MSI parser enforces its own length check or trusts the buffer.
+            int r = rand() % 100;
+            if(r < 50){
+                // fill with 'A' (easy to spot in crash dump)
+                memset(state->darwin.darwin_data_ansi, 'A', 260);
+                for(int i = 0; i < 260; i++)
+                    state->darwin.darwin_data_unicode[i] = L'A';
+            } else{
+                // fill with random bytes, no accidental null
+                for(int i = 0; i < 260; i++){
+                    state->darwin.darwin_data_ansi[i] = 1 + (rand() % 255);
+                    state->darwin.darwin_data_unicode[i] = 1 + (rand() % 0xFFFE);
+                }
+            }
+            break;
+        }
+
+        case MUTATE_DARWIN_INVALID_GUID:{
+            // malformed GUID format
+            break;
+        }
+
+        case MUTATE_DARWIN_NULL_BYTES:{
+            // embed null bytes in product code
+            break;
+        }
+
+        case MUTATE_DARWIN_RANDOM:{
+            // fully random bytes
+            break;
+        }
+
+        default:
+            break;
+    }
+}
+
 // do mutation
 static void op_apply(MutationOperator op, LNKGeneratorState* state, LNKLayout* layout){
     switch(op_to_group[op]){
@@ -1783,6 +1891,7 @@ static void op_apply(MutationOperator op, LNKGeneratorState* state, LNKLayout* l
         case GROUP_PROPSTORE_SET: apply_propstore_set(op, state); break;
         case GROUP_PROPSTORE_VAL: apply_propstore_val(op, state); break;
         case GROUP_PROPSTORE_TPV: apply_propstore_tpv(op, state); break;
+        case GROUP_DARWIN:        apply_darwin(op, state);        break;
         // add more...
 
         default: break;
