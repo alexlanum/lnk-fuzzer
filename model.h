@@ -517,16 +517,6 @@ typedef struct {
 } TrackerDataBlockPayload;
 
 /**
- * ExtraData DarwinDataBlock (COM activation path)
- * This gets passed to Darwin (Windows Installer) subsystem.
- * Strings here can reach MSI parser code through invocation.
- */
-typedef struct {
-    char    darwin_data_ansi[260];    // application identifier
-    wchar_t darwin_data_unicode[260]; // unicode version
-} DarwinDataBlockPayload;
-
-/**
  * ExtraData KnownFolderDataBlock (KNOWNFOLDERID)
  */
 typedef struct {
@@ -568,7 +558,6 @@ typedef struct {
     // parsed ExtraData block payloads
     SerializedPropertyStore     propstore;
     TrackerDataBlockPayload     tracker;
-    DarwinDataBlockPayload      darwin;
     KnownFolderDataBlockPayload knownfolder;
 } LNKGeneratorState;
 

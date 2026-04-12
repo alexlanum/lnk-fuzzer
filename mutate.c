@@ -203,7 +203,13 @@ static int op_precondition(MutationOperator op, LNKGeneratorState* state, LNKLay
     }
 }
 
-// helper for MUTATE_STRUCTURE_DESYNC_FLAG
+static ExtraDataBlock* find_extra_block(ExtraDataState* extra, ExtraDataType type){
+    for(int i = 0; i < extra->block_count; i++)
+        if(extra->blocks[i].type == type)
+            return &extra->blocks[i];
+    return NULL;
+}
+
 // ensures an ExtraData block does not exist in order to mismatch with LinkFlags
 static void remove_extra_block(ExtraDataState* extra, ExtraDataType type){
     for(int i = 0; i < extra->block_count; i++){
@@ -1771,27 +1777,37 @@ static void apply_propstore_tpv(MutationOperator op, LNKGeneratorState* state){
 }
 
 // GROUP_DARWIN DarwinDataBlock
-// product code string that gets passed to the MSI subsystem
+// contains a Darwin descriptor ("product code") which ends up in
+// msi.dll!MsiDecomposeDescriptorW at resolution.
+//
+// raw payload layout inside block->data (780 bytes total):
+//   [0..260)    ANSI  descriptor     (char[260], NUL-terminated in well-formed files)
+//   [260..780)  UTF-16LE descriptor  (uint16_t[260], NUL-terminated)
+//
+// mutate block->data directly. state->darwin is not serialized.
 static void apply_darwin(MutationOperator op, LNKGeneratorState* state){
-    // 0x000  4    BlockSize        = 0x314
-    // 0x004  4    BlockSignature   = 0xA0000006
-    // 0x008  260  SpecialFolderID  = ASCII Darwin application ID
-    // 0x268  520  Offset           = Unicode Darwin application ID
+    ExtraDataBlock* block = find_extra_block(&state->extradata, EXTRA_DARWIN);
+    if(!block || !block->data) return;
+
+    // a proper DarwinDataBlock is 0x314 bytes on the wire -> 0x30C payload
+    // so refuse to touch anything smaller; caller can use a size-mutation op for that
+    if(block->size < 8 + 780) return;
+
+    uint8_t* ansi = block->data; // 260
+    uint8_t* uni = block->data + 260; // 520 UTF16-LE
+
     switch(op){
         case MUTATE_DARWIN_FORMAT_STRING:{
             // format string parsing attack.
-            // inject format specifiers into Darwin product code string.
-            // the Darwin product code string passes through shell32 -> msi.dll for resolution.
-            // 
-            // if any function in that chain uses printf, fprintf, sprintf, snprintf, vprintf,
-            // or vfprintf on the product code without sanitization:
-            //   %s reads from stack as string pointer  – info leak / crash
-            //   %n writes byte count to stack address  – arbitrary write
-            //   %x/%p leaks stack values               – info leak
-            //   %hhn writes single byte                – precise memory overwrite
-            //
-            //   large width/precision tests buffer limits in snprintf/vsnprintf
-            
+            // inject format specifiers into Darwin product code string because it
+            // passes through shell32 into msi.dll for resolution. if any function on the path
+            // shell32!CShellLink::_DarwinResolve -> msi!MsiDecomposeDescriptorW -> msi!MsiProvideQualifiedComponentW
+            // passes the descriptor through a wprintf/wsprintf/StringCchPrintf without "%s" as the format specifier,
+            // we get r/w control primitives:
+            //   %s/%ls  – deref stack as wchar_t*  → read AV / leak
+            //   %n/%hn  – write count to stack ptr → arbitrary write
+            //   %N$p    – positional leak, skip ahead
+            //   %99999d – blow snprintf length calc            
             const char* payloads[] = {
                 // stack walk, leak values
                 "%x%x%x%x%x%x%x%x",
@@ -1825,41 +1841,54 @@ static void apply_darwin(MutationOperator op, LNKGeneratorState* state){
             };
 
             int count = sizeof(payloads) / sizeof(payloads[0]);
-            int r = rand() % count;
+            const char* payload = payloads[rand() % count];
+            size_t payload_len = strlen(payload);
+            if(payload_len > 259) payload_len = 259;
 
-            strncpy(state->darwin.darwin_data_ansi, payloads[r], 259);
-            state->darwin.darwin_data_ansi[259] = '\0';
+            memset(ansi, 0, 260);
+            memcpy(ansi, payload, payload_len);
 
-            for(int i = 0; payloads[r][i] && i < 259; i++){
-                state->darwin.darwin_data_unicode[i] = (wchar_t)payloads[r][i];
+            memset(uni, 0, 520);
+            for(size_t i = 0; i < payload_len; i++){
+                uni[i*2] = (uint8_t)payload[i];
+                uni[i*2 + 1] = 0;
             }
-            state->darwin.darwin_data_unicode[259] = L'\0';
+
             break;
         }
 
         case MUTATE_DARWIN_OVERLONG:{
-            // populate every byte in the 260-byte buffer, no terminator.
-            // parser expects null-terminated string within 260 bytes.
-            // without terminator, strlen/strcpy reads past buffer into whatever follows in memory.
-            // tests if the MSI parser enforces its own length check or trusts the buffer.
-            int r = rand() % 100;
-            if(r < 50){
-                // fill with 'A' (easy to spot in crash dump)
-                memset(state->darwin.darwin_data_ansi, 'A', 260);
-                for(int i = 0; i < 260; i++)
-                    state->darwin.darwin_data_unicode[i] = L'A';
-            } else{
-                // fill with random bytes, no accidental null
+            // populate every byte in both buffers completely, no terminator.
+            // tests if the MSI parser enforces its own length check or walks the buffer with an implcit 260-cap or wcslen.
+            // if it walks, it reaads past the buffer into whatever follows (next extradata block or heap data)
+            int r = (rand() % 2) == 0;
+            if(r){
+                memset(ansi, 'A', 260);
                 for(int i = 0; i < 260; i++){
-                    state->darwin.darwin_data_ansi[i] = 1 + (rand() % 255);
-                    state->darwin.darwin_data_unicode[i] = 1 + (rand() % 0xFFFE);
+                    uni[i*2] = 'A';
+                    uni[i*2 + 1] = 0;
+                }
+            } else{
+                for(int i = 0; i < 260; i++){
+                    ansi[i] = 1 + (rand() % 255); // never 0
+                }
+                for(int i = 0; i < 260; i++){
+                    // random BMP code unit, never 0x0000
+                    uint16_t cu;
+                    do{
+                        cu = (uint16_t)(rand() & 0xFFFF);
+                    } while(cu == 0);
+                    uni[i*2] = cu & 0xFF;
+                    uni[i*2 + 1] = cu >> 8;
                 }
             }
             break;
         }
 
         case MUTATE_DARWIN_INVALID_GUID:{
-            // malformed GUID format
+            // the Darwin descriptor is parsed by msi!MsiDecomposeDescriptorW,
+            // which expects one of two forms:
+            
             break;
         }
 
