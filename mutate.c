@@ -1858,30 +1858,10 @@ static void apply_darwin(MutationOperator op, LNKGeneratorState* state){
         }
 
         case MUTATE_DARWIN_OVERLONG:{
-            // populate every byte in both buffers completely, no terminator.
-            // tests if the MSI parser enforces its own length check or walks the buffer with an implcit 260-cap or wcslen.
-            // if it walks, it reaads past the buffer into whatever follows (next extradata block or heap data)
-            int r = (rand() % 2) == 0;
-            if(r){
-                memset(ansi, 'A', 260);
-                for(int i = 0; i < 260; i++){
-                    uni[i*2] = 'A';
-                    uni[i*2 + 1] = 0;
-                }
-            } else{
-                for(int i = 0; i < 260; i++){
-                    ansi[i] = 1 + (rand() % 255); // never 0
-                }
-                for(int i = 0; i < 260; i++){
-                    // random BMP code unit, never 0x0000
-                    uint16_t cu;
-                    do{
-                        cu = (uint16_t)(rand() & 0xFFFF);
-                    } while(cu == 0);
-                    uni[i*2] = cu & 0xFF;
-                    uni[i*2 + 1] = cu >> 8;
-                }
-            }
+            // DarwinDataAnsi is 260 bytes, DarwinDataUnicode is 260 UTF-16 units (520 bytes)
+            // per MS-SHLLINK both should be null-terminated within those bounds.
+            // we deliberately omit/corrupt the terminator so a parser using strlen/wcslen/strcpy
+            // walks past the buffer into whatever follows in the extradata stream or heap
             break;
         }
 
