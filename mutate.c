@@ -203,6 +203,7 @@ static int op_precondition(MutationOperator op, LNKGeneratorState* state, LNKLay
     }
 }
 
+// all ExtraData blocks use the same approach: call find_extra_block -> work on block->data directly at known offsets
 static ExtraDataBlock* find_extra_block(ExtraDataState* extra, ExtraDataType type){
     for(int i = 0; i < extra->block_count; i++)
         if(extra->blocks[i].type == type)
@@ -1777,14 +1778,10 @@ static void apply_propstore_tpv(MutationOperator op, LNKGeneratorState* state){
 }
 
 // GROUP_DARWIN DarwinDataBlock
-// contains a Darwin descriptor ("product code") which ends up in
-// msi.dll!MsiDecomposeDescriptorW at resolution.
-//
+// contains a Darwin descriptor ("product code") which ends up in msi.dll!MsiDecomposeDescriptorW during resolution
 // raw payload layout inside block->data (780 bytes total):
 //   [0..260)    ANSI  descriptor     (char[260], NUL-terminated in well-formed files)
 //   [260..780)  UTF-16LE descriptor  (uint16_t[260], NUL-terminated)
-//
-// mutate block->data directly. state->darwin is not serialized.
 static void apply_darwin(MutationOperator op, LNKGeneratorState* state){
     ExtraDataBlock* block = find_extra_block(&state->extradata, EXTRA_DARWIN);
     if(!block || !block->data) return;
@@ -1858,27 +1855,87 @@ static void apply_darwin(MutationOperator op, LNKGeneratorState* state){
         }
 
         case MUTATE_DARWIN_OVERLONG:{
-            // DarwinDataAnsi is 260 bytes, DarwinDataUnicode is 260 UTF-16 units (520 bytes)
-            // per MS-SHLLINK both should be null-terminated within those bounds.
-            // we deliberately omit/corrupt the terminator so a parser using strlen/wcslen/strcpy
-            // walks past the buffer into whatever follows in the extradata stream or heap
+            // fill entire buffer with non-null bytes, no terminator.
+            // parser expects null-terminated string within 260 bytes.
+            // without terminator, strlen/strcpy reads past buffer, reads
+            // whatever comes after the buffer in the ExtraData stream or heap.
+            int r = rand() % 100;
+            if(r < 50){
+                memset(ansi, 'A', 260); // 'A' easy to read in crash dump or !heap
+                for(int i = 0; i < 520; i+=2){
+                    uni[i] = 'A';
+                    uni[i+1] = 0;
+                }
+            } else{
+                // random non-null bytes
+                for(int i = 0; i < 260; i++)
+                    ansi[i] = 1 + (rand() % 255);
+                for(int i = 0; i < 520; i+=2){
+                    uni[i] = 1 + (rand() % 255);
+                    uni[i+1] = rand() & 0xFF;
+                }
+            }
+            // explicitly no null term
             break;
         }
 
         case MUTATE_DARWIN_INVALID_GUID:{
-            // the Darwin descriptor is parsed by msi!MsiDecomposeDescriptorW,
-            // which expects one of two forms:
-            
+            // Darwin descriptor is parsed by msi!MsiDecomposeDescriptorW
+            // which expects a packed descriptor containing:
+            //   ProductCode {GUID} – 38 chars
+            //   FeatureId   string – var
+            //   ComponentId {GUID} – 38 chars
+            // a valid GUID is {8-4-4-4-12} hex chars.
+            // inject malformed GUIDs to test MSI parser:
+            //   unclosed braces, wrong len, non-hex chars, extra dashes
+            const char* bad_guids[] = {
+                "{00000000-0000-0000-0000-00000000000",     // missing closing brace
+                "00000000-0000-0000-0000-000000000000}",    // missing opening brace
+                "{ZZZZZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZZZZZZZZZ}",   // non-hex chars
+                "{00000000-0000-0000-0000-0000000000000}",  // too long
+                "{0000-00000-0000-0000-000000000000}",      // wrong dash positions
+                "{}",                                       // empty GUID
+                "{00000000}",                               // truncated
+                "{{00000000-0000-0000-0000-000000000000}}", // double braces
+            };
+            int r = rand() % 8;
+            size_t len = strlen(bad_guids[r]);
+            if(len > 259) len = 259;
+
+            memset(ansi, 0, 260);
+            memcpy(ansi, bad_guids[r], len);
+
+            memset(uni, 0, 520);
+            for(size_t i = 0; i < len; i++){
+                uni[i*2] = (uint8_t)bad_guids[r][i];
+                uni[i*2 + 1] = 0;
+            }
             break;
         }
 
         case MUTATE_DARWIN_NULL_BYTES:{
-            // embed null bytes in product code
+            // embed null bytes at random positions in the decriptor
+            // MSI parser may stop at the first null (truncated parse),
+            // while shell32 uses the full 260-byte field.
+            // mismatch on string len
+            int num_nulls = 1 + (rand() % 10);
+            for(int i = 0; i < num_nulls; i++){
+                int pos = rand() % 259; // not touching last byte
+                ansi[pos] = '\0';
+                uni[pos * 2] = 0;
+                uni[pos * 2 + 1] = 0;
+            }
             break;
         }
 
         case MUTATE_DARWIN_RANDOM:{
-            // fully random bytes
+            // fill both fields with random bytes
+            // no structure, no GUIDs, no null terminators
+            // every parsing assumption is violated at once
+            for(int i = 0; i < 260; i++)
+                ansi[i] = rand() & 0xFF;
+            for(int i = 0; i < 520; i++)
+                uni[i] = rand() & 0xFF;
             break;
         }
 
