@@ -2109,6 +2109,10 @@ static void apply_tracker(MutationOperator op, LNKGeneratorState* state){
     }
 }
 
+static void apply_knownfolder(MutationOperator op, LNKGeneratorState* state){
+    
+}
+
 // do mutation
 static void op_apply(MutationOperator op, LNKGeneratorState* state, LNKLayout* layout){
     switch(op_to_group[op]){
@@ -2124,6 +2128,7 @@ static void op_apply(MutationOperator op, LNKGeneratorState* state, LNKLayout* l
         case GROUP_PROPSTORE_TPV: apply_propstore_tpv(op, state); break;
         case GROUP_DARWIN:        apply_darwin(op, state);        break;
         case GROUP_TRACKER:       apply_tracker(op, state);       break;
+        case GROUP_KNOWNFOLDER:   apply_knownfolder(op, state);   break;
         // add more...
 
         default: break;
