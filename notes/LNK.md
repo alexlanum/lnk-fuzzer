@@ -1173,7 +1173,29 @@ If the `.lnk` targets an application managed by Microsoft Installer (MSI), this 
 0x268  520  Offset           = Unicode Darwin application ID
 ```
 
+## ExtraData: TrackerDataBlock
 
+The TrackerDataBlock contains Distributed Link Tracking (DLT) properties.
+
+The TrackerDataBlock is 96 bytes in size.
+
+```
+0x000  4   BlockSize              = 0x00000060
+0x004  4   BlockSignature         = 0xa0000003
+0x008  4   DLT Data Size          = 88
+0x012  4   DLT Version            = 0
+0x016  16  Machine ID             = String
+0x032  16  Droid volume ID        = GUID (NTFS object ID)
+0x048  16  Droid file ID          = GUID (NTFS object ID)
+0x064  16  Birth droid volume ID  = GUID (NTFS object ID)
+0x080  16  Birth droid file ID    = GUID (NTFS object ID)
+```
+
+Droid in this context refers to CDomainRelativeObjId.
+
+The Droid volume ID can be found in the NTFS $OBJECT_ID attribute of the Volume file system metadata file. The LSB in the Droid volume ID contains the cross volume move flag. This flag is set if a file is moved across volumes.
+
+The Droid file ID can be found in the NTFS $OBJECT_ID attribute of the corresponding file.
 
 
 ## Resolution
