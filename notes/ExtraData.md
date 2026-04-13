@@ -27,7 +27,7 @@ Binary layout (96 bytes, no room for variance):
 
 > "Droid" stands for Domain Relative Object ID (`CDomainRelativeObjID`) – a C++ class that can be used by the DLT service to determine if the file has moved
 
-The `Length` field is unusual, it counts from itself onward, including its own 4 bytes, which is different from how ExtraData blocks typically define their length fields. An [[older spec revision](https://wikileaks.org/ciav7p1/cms/files/%5BMS-SHLLINK%5D.pdf)] defined `Length` as "This value MUST be greater than or equal to" (not an exact match), and `MachineID` as "(variable): A character string" rather than a fixed 16 bytes. The current version says "This value MUST be `0x00000058`" (exact match), and `MachineID` is "16 bytes" (fixed size). This suggests Microsoft encountered implementations that diverged.
+The `Length` field is unusual, it counts from itself onward, including its own 4 bytes, which is different from how ExtraData blocks typically define their length fields. An [[older spec revision](https://wikileaks.org/ciav7p1/cms/files/%5BMS-SHLLINK%5D.pdf)] defined `Length` as "This value MUST be greater than or equal to" (not an exact match), and `MachineID` as "(variable): A character string" rather than a fixed 16 bytes. The current version says "This value MUST be `0x00000058`" (exact match), and `MachineID` is "16 bytes" (fixed size). This suggests Microsoft encountered implementations that diverged. Reverse engineering of `CTracker::Load` shows that the `Length >= 0x58` check is the one that is currently being used.
 
 Each GUID field uses [MS-DTYP 2.3.4.2][https://winprotocoldoc.z19.web.core.windows.net/MS-DTYP/%5bMS-DTYP%5d.pdf] representation.
 
@@ -43,17 +43,23 @@ CShellLink::_LoadFromStream
   . CTracker::Load()                        // parses the 88-byte payload
 ```
 
-Validates:
-- `BlockSize` must equal `0x60`, the walker advances through ExtraData by reading this
-- `BlockSignature` must equal `0xA0000003`, unrecognized signatures are skipped by the walker
-- `Length` must equal `0x58`, other values are rejected
-- `Version` must equal `0`, non-zero triggers `CTracker::InitNew`
+Validation:
+- `a3 >= 0x58` AND `Length >= 0x58` (not exact match, old spec `>=` behavior still in code)
+- `Version == 0` (non-zero returns `ERROR_UNKNOWN_REVISION`)
+- `Length` and `Version` are checked BEFORE content copy: early return, won't partially read
 
-Does not validate:
-- `MachineID` content is NOT validated. Arbitrary 16-byte sequences are accepted. No check for valid NetBIOS name format. No check for null termination within the field. Windows simply copies the 16 bytes.
-- `Droid`/`DroidBirth` GUID content is NOT validated. Any 64 bytes are accepted. No check for valid UUIDv1 GUIDs. No check against `GUID_NULL`.
+No validation:
+- `MachineID`: raw 16-byte OWORD copy, no null/format check (CONFIRMED)
+- `Droid`/`DroidBirth`: raw OWORD copies, no GUID validation (CONFIRMED)
 
-When validation fails, `CTracker::InitNew` zeroes out the TrackerDataBlock fields while preserving the header (`BlockSize`, `BlockSignature`, `Length`, `Version`). The link continues to function, it simply cannot use DLT-based resolution. This is silent degradation, but not an error.
+Call ordering:
+1. _InitRPC() — initializes RPC state (potential leak on later rejection)
+2. check a3 >= 0x58 AND Length >= 0x58
+3. check Version == 0
+4. copy all 5 content fields (80 bytes total)
+5. set tracking flags
+
+When validation fails: the caller (`_LoadFromStream`) calls `CTracker::InitNew`, not `Load` itself. `CTracker::InitNew` zeroes out the TrackerDataBlock fields while preserving the header (`BlockSize`, `BlockSignature`, `Length`, `Version`). The link continues to function, it simply cannot use DLT-based resolution. This is silent degradation, but not an error.
 
 ## DLT resolution
 When `CShellLink::Resolve` cannot find the target file at its stored path, it invokes the DLT client servce (`trkwks.dll`) with the TrackerDataBlock payload. The resolution involves multiple network related steps:
@@ -111,6 +117,7 @@ Object IDs are created on demand via `FSCTL_CREATE_OR_GET_OBJECT_ID` and indexed
 
 The low-order bit of the first byte of the `VolumeID` GUID stores a `CrossVolumeMoveFlag` indicating whether the file has been moved across volumes. This is a single bit embedded in the GUID that dictates resolution behavior. If the parser treats `VolumeID` as opaque, it will miss this semantic.
 
+
 # TODO
 Content fields (MachineID, Droid, DroidBirth) are likely not validated based on
 the consistent pattern observed across the LNK parser: structural fields are
@@ -120,3 +127,7 @@ Decompile CTracker::Load to verify.
 Use LnkMeMaybe or securifybv/ShellLink to generate seed corpus with valid TrackerDataBlocks, then apply structure-aware mutations targeting: BlockSize/Length/Version fields (envelope), MachineID string content (content), Droid/DroidBirth GUID bytes (content), and cross-field consistency (ex. Droid ≠ DroidBirth to trigger cross-volume resolution paths).
 
 If first call to Resolve initializes CTracker partially but skips DLT due to the SLR_NOTRACK flag, and the second call assumes CTracker is either fully initialized or uninitialized, there could be a state confusion bug. Do multi-call sequences with different legitimate flags that test strategy which single-call harnesses will ideally miss.
+
+test third-party LNK parsers (AV engines, forensic tools, backup/sync software) with Length > 0x58. the older MS-SHLLINK spec (v20131025) defined Length as ">= 0x58" and MachineID as variable-length. parsers built against that spec may accept oversized Length and read past the 88-byte payload into adjacent memory. this is NOT a shell32 target — it targets software that implemented LNK parsing from the pre-2013 spec and never updated. separate harness needed per target.
+
+decompile CTracker::Load in shell32.dll to determine field read ordering. if content fields (MachineID, Droid, DroidBirth) are read before the Length/Version checks, a malformed Length could cause OOB reads from adjacent ExtraData blocks before InitNew zeroes the fields.

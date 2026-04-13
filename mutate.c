@@ -1778,8 +1778,7 @@ static void apply_propstore_tpv(MutationOperator op, LNKGeneratorState* state){
 }
 
 // GROUP_DARWIN DarwinDataBlock
-// contains a Darwin descriptor ("product code") which ends up in msi.dll!MsiDecomposeDescriptorW during resolution
-// raw payload layout inside block->data (780 bytes total):
+// payload layout inside block->data (780 bytes):
 //   [0..260)    ANSI  descriptor     (char[260], NUL-terminated in well-formed files)
 //   [260..780)  UTF-16LE descriptor  (uint16_t[260], NUL-terminated)
 static void apply_darwin(MutationOperator op, LNKGeneratorState* state){
@@ -1944,10 +1943,170 @@ static void apply_darwin(MutationOperator op, LNKGeneratorState* state){
     }
 }
 
+// GROUP_TRACKER TrackerDataBlock
+// payload layout inside block->data (88 bytes):
+//   [0..4)    Length                            (must be 0x58)
+//   [4..8)    Version                           (must be 0)
+//   [8..24)   MachineID                         (16 bytes, NULL-terminated NetBIOS name)
+//   [24..40)  Droid[0] VolumeID GUID            (contains CrossVolumeMoveFlag in LSB of byte 0)
+//   [40..56)  Droid[1] ObjectID GUID            (bytes 10-15 contain MAC address if UUIDv1)
+//   [56..72)  DroidBirth[0] BirthVolumeID GUID
+//   [72..88)  DroidBirth[1] BirthObjectID GUID
 static void apply_tracker(MutationOperator op, LNKGeneratorState* state){
     ExtraDataBlock* block = find_extra_block(&state->extradata, EXTRA_TRACKER);
     if(!block || !block->data) return;
-    
+    if(block->size < 8 + 88) return; // 8 header + 88 payload
+    uint8_t* data = block->data;
+
+    switch(op){
+        case MUTATE_TRACKER_LENGTH_WRONG:{
+            // CTracker::Load checks a3 >= 0x58 AND Length >= 0x58 (NOT exact match)
+            // the current spec says MUST be 0x58 but the code still uses >=
+            // values below 0x58 return E_INVALIDARG. values above 0x58 pass.
+            // on failure, the CALLER (_LoadFromStream) calls CTracker::InitNew.
+            uint32_t val;
+            int r = rand() % 100;
+            if(r < 20)
+                val = 0;     // zero: E_INVALIDARG, tests _InitRPC leak on rejection
+            else if(r < 40)
+                val = 0x57;  // one byte short, E_INVALIDARG
+            else if(r < 60)
+                val = 0x59;  // passes >= check, code copies 80 bytes as normal
+            else if(r < 75)
+                val = 0x100; // passes >= check, but Length field mismatches actual payload size
+            else if(r < 90)
+                val = 4;     // below 0x58, E_INVALIDARG
+            else
+                val = rand() & 0xFFFF;
+            memcpy(data, &val, 4);
+            break;
+        }
+
+        case MUTATE_TRACKER_VERSION_NONZERO:{
+            // CTracker::Load checks *(DWORD*)(a2+4) == 0 after Length check.
+            // non-zero returns ERROR_UNKNOWN_REVISION (2147943706).
+            // content fields are not read before this check, so no partial reads.
+            // _InitRPC runs before all checks: upon version rejection, RPC state
+            // was initialized but never used. tests if caller cleans up RPC state.
+            uint32_t val;
+            int r = rand() % 100;
+            if(r < 40)
+                val = 1; // min nonzero
+            else if(r < 70)
+                val = 0xFFFFFFFF; // max, tests signed/unsigned confusion
+            else
+                val = rand();
+            memcpy(data + 4, &val, 4);
+            break;
+        }
+
+        case MUTATE_TRACKER_DROID_CORRUPT:{
+            // Droid/DroidBirth GUIDs are NOT validated by CTracker::Load (confirmed).
+            // raw OWORD copies, no format/null check. 80 bytes copied unconditionally
+            // after Length and Version pass.
+            //
+            // AVs:
+            //   . CrossVolumeMoveFlag (LSB of VolumeID byte 0) controls whether
+            //     DLT takes same-volume or cross-volume resolution path.
+            //     toggling it sends resolution down the wrong path.
+            //   
+            //   . Droid != DroidBirth triggers cross-volume move resolution
+            //     which contacts the MachineID host over SMB.
+            //
+            //   . all zero GUIDs (GUID_NULL) may pass null ptr checks but
+            //     fail NTFS $ObjId lookups in unexpected ways.
+            int r = rand() % 100;
+            if(r < 15){
+                data[24] ^= 0x01; // flip LSB of VolumeID byte 0 (toggles CrossVolumeMoveFlag)
+            } else if(r < 30){
+                memset(data + 24, 0, 32); // GUID_NULL Droid for both volume and object
+            } else if(r < 45){
+                memset(data + 56, 0, 32); // GUID_NULL DroidBirth
+            } else if(r < 60){
+                memset(data + 24 + (rand() % 2) * 32, 0xFF, 32); // all 0xFF max GUID values
+            } else if(r < 75){
+                // make Droid != DroidBirth to trigger cross-volume resolution
+                // copy Droid, flip some bytes so they differ
+                memcpy(data + 24, data + 56, 32); // start equal
+                int num = 1 + (rand() % 8);
+                for(int i = 0; i < num; i++)
+                    data[24 + (rand() % 32)] ^= 1 + (rand() % 255);
+            } else{
+                // random bytes in one of the four GUID fields
+                int field = rand() % 4; // 0=VolumeID, 1=ObjectID, 2=BirthVolumeID, 3=BirthObjectID
+                int offset = 24 + (field * 16);
+                int num = 1 + (rand() % 8);
+                for(int i = 0; i < num; i++)
+                    data[offset + (rand() % 16)] ^= 1 + (rand() % 255);
+            }
+            break;
+        }
+
+        case MUTATE_TRACKER_MACHINE_ID_CORRUPT:{
+            // MachineID is NOT validated by CTracker::Load (confirmed).
+            // raw 16-byte OWORD copy into this+72 with no null termination or
+            // NetBIOS format check. downstream DLT resolution uses this as a
+            // hostname for outbound SMB connection to \\MachineID\pipe\trkwks.
+            int r = rand() % 100;
+            if(r < 25){
+                // fill all 16 bytes non-zero, no null terminator.
+                // trkwks.dll!CRpcClientBinding::RcInitialize calls RaiseIfInvalid
+                // which checks byte 15 == 0. all-non-null is caught and throws
+                // but CTracker::Load stores the raw bytes at this+72 without
+                // checking. any OTHER consumer of MachineID that doesn't call
+                // RaiseIfInvalid would hit a strlen overread.
+                // also tests whether the exception from RaiseIfInvalid is
+                // handled cleanly by the caller.
+                for(int i = 8; i < 24; i++)
+                    data[i] = 'A' + (rand() % 26);
+            } else if(r < 35){
+                // byte 15 = 0x00, bytes 0-14 all non-zero.
+                // passes RaiseIfInvalid (byte 15 == 0).
+                // strlen returns 15, mbstowcs_s writes 16 wchars into DstBuf[16].
+                // an exact fit will test boundary of stack buffer.
+                for(int i = 8; i < 23; i++)
+                    data[i] = 'A' + (rand() % 26);
+                data[23] = 0x00;
+            } else if(r < 40){
+                // all null, empty machine name
+                memset(data + 8, 0, 16);
+            } else if(r < 55){
+                // embedded nulls at random positions
+                // CTracker::Load copies all 16 bytes (confirmed via RE).
+                // CRpcClientBinding::RcInitialize uses manual strlen (confirmed)
+                // to measure MachineID before mbstowcs_s conversion.
+                // embedded null truncates the hostname — DLT resolves a shorter
+                // name than what CTracker stored. bytes after the null sit in
+                // the CTracker object but are never used for resolution.
+                for(int i = 8; i < 24; i++)
+                    data[i] = 'A' + (rand() % 26);
+                int num_nulls = 1 + (rand() % 4);
+                for(int i = 0; i < num_nulls; i++)
+                    data[8 + 1 + (rand() % 14)] = '\0';
+            } else if(r < 70){
+                // non ASCII bytes, stress codepage conversion.
+                // MachineID uses system default codepage (ASCII), high bytes
+                // trigger MultiByteToWideChar conversion paths.
+                for(int i = 8; i < 24; i++)
+                    data[i] = 0x80 + (rand() % 0x80);
+            } else if(r < 85){
+                // path separator characters: backslashes and dots.
+                // if downstream code concats MachineID into a path
+                // without sanitization, these could escape the context
+                const char* hostile = "\\\\..\\..\\C$\\";
+                size_t len = strlen(hostile);
+                memset(data + 8, 0, 16);
+                memcpy(data + 8, hostile, len > 15 ? 15 : len);
+            } else{
+                // fully random bytes
+                for(int i = 8; i < 24; i++)
+                    data[i] = rand() & 0xFF;
+            }
+            break;
+        }
+        default:
+            break;
+    }
 }
 
 // do mutation
