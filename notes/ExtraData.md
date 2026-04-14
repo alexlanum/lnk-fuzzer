@@ -118,7 +118,7 @@ Object IDs are created on demand via `FSCTL_CREATE_OR_GET_OBJECT_ID` and indexed
 The low-order bit of the first byte of the `VolumeID` GUID stores a `CrossVolumeMoveFlag` indicating whether the file has been moved across volumes. This is a single bit embedded in the GUID that dictates resolution behavior. If the parser treats `VolumeID` as opaque, it will miss this semantic.
 
 
-# TODO
+## TODO
 Content fields (MachineID, Droid, DroidBirth) are likely not validated based on
 the consistent pattern observed across the LNK parser: structural fields are
 checked, content fields are trusted. Not confirmed via RE of CTracker::Load.
@@ -131,3 +131,24 @@ If first call to Resolve initializes CTracker partially but skips DLT due to the
 test third-party LNK parsers (AV engines, forensic tools, backup/sync software) with Length > 0x58. the older MS-SHLLINK spec (v20131025) defined Length as ">= 0x58" and MachineID as variable-length. parsers built against that spec may accept oversized Length and read past the 88-byte payload into adjacent memory. this is NOT a shell32 target — it targets software that implemented LNK parsing from the pre-2013 spec and never updated. separate harness needed per target.
 
 decompile CTracker::Load in shell32.dll to determine field read ordering. if content fields (MachineID, Droid, DroidBirth) are read before the Length/Version checks, a malformed Length could cause OOB reads from adjacent ExtraData blocks before InitNew zeroes the fields.
+
+---
+
+# KnownFolderDataBlock
+The KnownFolderDataBlock stores a GUID identifying a "Known Folder" – Windows' Vista-era replacement for the older CSIDL system. It contains a `KnownFolderID` GUID that identifies the folder, and an `Offset` (4-byte uint32) that specifies the location of the ItemID of the first child segment of the IDList specified by the `KnownFolderID`.
+
+Binary layout (28 bytes):
+
+```
+0x00  4   BlockSize       0x0000001C (28)
+0x04  4   BlockSignature  0xA000000B
+0x08  16  KnownFolderID   GUID MS-DTYP packet repr.
+0x16  4   Offset          uint32 byte offset into LinkTargetIDList
+```
+
+This is the smallest ExtraData block with real payload, just 20 bytes of content after the 8-byte header.
+
+## purpose: namespace context switching
+The KnownFolderDataBlock specifies the location of a known folder. This data can be used when a link target is a known folder to keep track of the folder so that the link target IDList can be translated.
+
+When an LNK is loaded. the shell uses the `KnownFolderID` to resolve the current path to the folder (which may have changed since the LNK was created), then uses the `Offset` to locate a specific item within the PIDL relative to that folder. This is the namespace context switching mechanism. The `KnownFolderID` changes which folder namespace interprets PIDL.
