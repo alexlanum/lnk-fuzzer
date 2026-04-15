@@ -146,9 +146,25 @@ Binary layout (28 bytes):
 0x16  4   Offset          uint32 byte offset into LinkTargetIDList
 ```
 
+- `KnownFolderID`: GUID that identifies which Known Folder this shortcut targets (ex. Control Panel, Desktop, Documents).
+- `Offset`: byte offset into the `LinkTargetIDList` where the resolved folder's PIDL gets inserted.
+
 This is the smallest ExtraData block with real payload, just 20 bytes of content after the 8-byte header.
 
 ## purpose: namespace context switching
 The KnownFolderDataBlock specifies the location of a known folder. This data can be used when a link target is a known folder to keep track of the folder so that the link target IDList can be translated.
 
-When an LNK is loaded. the shell uses the `KnownFolderID` to resolve the current path to the folder (which may have changed since the LNK was created), then uses the `Offset` to locate a specific item within the PIDL relative to that folder. This is the namespace context switching mechanism. The `KnownFolderID` changes which folder namespace interprets PIDL.
+When an LNK is loaded, the shell uses `KnownFolderID` to resolve the current path to the folder (which may have changed since the LNK was created), then uses `Offset` to locate a specific item within the PIDL relative to that folder. This is the namespace context switching mechanism. The `KnownFolderID` changes which folder namespace interprets the PIDL.
+
+Resolution flow:
+
+```
+CShellLink::_LoadFromStream
+  . SHFindDataBlock(m_pDBList, 0xA000000B)    // find KnownFolderDataBlock
+  . read KnownFolderID GUID + Offset
+  . SHGetKnownFolderID(KnownFolderID)         // resolve GUID to current PIDL
+  . splice resolved PIDL into LinkTargetIDList at Offset
+```
+
+This means the `KnownFolderID` GUID determines the root namespace, and `Offset` determines where in the existing PIDL to graft the resolved folder's PIDL. If either is corrupted, the shell interprets PIDL items under the wrong namespace.
+
