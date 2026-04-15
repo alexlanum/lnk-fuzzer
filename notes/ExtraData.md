@@ -143,7 +143,7 @@ Binary layout (28 bytes):
 0x00  4   BlockSize       0x0000001C (28)
 0x04  4   BlockSignature  0xA000000B
 0x08  16  KnownFolderID   GUID MS-DTYP packet repr.
-0x16  4   Offset          uint32 byte offset into LinkTargetIDList
+0x18  4   Offset          uint32 byte offset into LinkTargetIDList
 ```
 
 - `KnownFolderID`: GUID that identifies which Known Folder this shortcut targets (ex. Control Panel, Desktop, Documents).
@@ -156,15 +156,104 @@ The KnownFolderDataBlock specifies the location of a known folder. This data can
 
 When an LNK is loaded, the shell uses `KnownFolderID` to resolve the current path to the folder (which may have changed since the LNK was created), then uses `Offset` to locate a specific item within the PIDL relative to that folder. This is the namespace context switching mechanism. The `KnownFolderID` changes which folder namespace interprets the PIDL.
 
-Resolution flow:
+## resolution order (`_DecodeSpecialFolder`)
+1. `SHFindDataBlock(m_pDBList, 0xA000000B)` — try KnownFolderDataBlock first
+2. `_ShouldDecodeSpecialFolder(KnownFolderID)` — machine identity gate
+3. `SHGetKnownFolderIDList_Internal(KnownFolderID, flags)` — resolve GUID to PIDL
+4. If no KnownFolderDataBlock: fall back to `SHFindDataBlock(0xA0000005)` + `SHCloneSpecialIDList`
+5. Walk `LinkTargetIDList`, clone prefix via `ILCloneCB(pidl, Offset)`
+6. `TranslateAliasWithEvent()` — graft resolved PIDL into original
+
+## _ShouldDecodeSpecialFolder
+Not a simple flag check. It performs machine identity validation:
+1. Creates `KnownFolderManager` COM object
+2. Calls `IKnownFolderManager::GetFolder(KnownFolderID)` to get `IKnownFolder`
+3. Calls `IKnownFolder::GetFolderDefinition` to get category (virtal, peruser, common)
+4. Reads a machine GUID from the LNK's PropertyStore
+5. Calls `SHGetMachineGUID` to get the current machine's GUID
+6. Compares stored GUID vs current GUID
+
+If same machine: allow decode (return true).
+
+If different machine and folder is `KF_CATEGORY_PERUSER`: only allow if `_IsCurrentUserShortcutCreator` returns false.
+
+## TranslateAliasWithEvent
+Receives:
+```
+a2 = original PIDL (full LinkTargetIDList)
+a3 = prefix PIDL (cloned up to Offset bytes via ILCloneCB)
+a4 = resolved known folder PIDL
+```
+
+Walks both PIDLs counting items and total bytes. If identical (same count, same size, same `memcmp`), no translation needed. Otherwise calls `IShellFolder::CompareIDs` to perform the actual namespace translation, then `ReparseRelativeIDListInternal + ILCombine` to produce the final PIDL.
+
+## relation to SpecialFolderDataBlock
+KnownFolderDataBlock is tried in resolution before SpecialFolderDataBlock. If both are present, only KnownFolderDataBlock is used. SpecialFolderDataBlock is the fallback.
+
+KnownFolderDataBlock and SpecialFolderDataBlock do the same thing: switch namespace context. The only difference is that they use different identifier systems:
 
 ```
-CShellLink::_LoadFromStream
-  . SHFindDataBlock(m_pDBList, 0xA000000B)    // find KnownFolderDataBlock
-  . read KnownFolderID GUID + Offset
-  . SHGetKnownFolderID(KnownFolderID)         // resolve GUID to current PIDL
-  . splice resolved PIDL into LinkTargetIDList at Offset
+SpecialFolderDataBlock (0xA0000005):
+  . uses CSIDL values (legacy, integer constants like CSIDL_CONTROLS = 3)
+  . pre-Vista, still works on all Windows versions
+  . 16 byte payload (SpecialFolderID integer + Offset)
 ```
 
-This means the `KnownFolderID` GUID determines the root namespace, and `Offset` determines where in the existing PIDL to graft the resolved folder's PIDL. If either is corrupted, the shell interprets PIDL items under the wrong namespace.
+```
+KnownFolderDataBlock (0xA000000B):
+  . uses KNOWNFOLDERID GUIDs (post-Vista, like FOLDERID_ControlPanelFolder)
+  . more extensible, supports custom folders – the old CSIDL system had a fixed list provided by Microsoft, whilst newer versions allow applications to define new ones. For instance, OneDrive uses IKnownFolderManager::RegisterFolder to register FOLDERID_SkyDrive.
+  . 20 byte payload (KnownFolderID GUID + Offset)
+```
 
+Both of these blocks can trigger the same attack surface. [CVE-2017-8464][https://github.com/securifybv/ShellLink] was exploited using either block.
+
+## CVE-2017-8464
+The exploit creates an LNK file with a SpecialFolderDataBlock where the folder ID is set to the Control Panel. This is enough to bypass the [CPL whitelist][https://hackmag.com/wp-content/uploads/2025/12/16692_original-vs-patch.jpg] and trick Windows into loading an arbitrary DLL file.
+
+The exploit works the same if KnownFolderDataBlock uses `FOLDERID_ControlPanelFolder` `{82A74AEB-AEB4-465C-A014-D097EE346D63}`:
+1. LNK file has `LinkTargetIDList` pointing to a `.cpl` file on an attacker-controlled path (ex. network share).
+2. KnownFolderDataBlock sets `KnownFolderID = FOLDERID_ControlPanelFolder` with `Offset` pointing at the CPL item in the PIDL.
+3. Explorer renders the LNK icon, resolves the `KnownFolderID`, switches the namespace context to Control Panel.
+4. Under Control Panel namespace, `CControlPanelFolder::GetUIObjectOf` treats the PIDL item as a CPL module.
+5. `CControlPanelFolder` calls `LoadLibraryW` on the CPL path -> arbitrary code execution.
+
+The bypass works because `_ShouldDecodeSpecialFolder` skips machine identity verification when the LNK's PropertyStore has no machine GUID property. Control Panel is `KF_CATEGORY_VIRTUAL`, so it falls through the per-user check. Crafting an LNK without the machine GUID property causes `_ShouldDecodeSpecialFolder` to default to true, and the namespace switch to Control Panel proceeds unchecked.
+
+Patch: added `_IsRegisteredCPLApplet` validation.
+
+The patch only mitigated that specific Control Panel loading path. Other namespace folders reachable via `KnownFolderID` were not similarly hardened.
+
+## LinkFlags DisableKnownFolderTracking
+LinkFlags bit 22 (0x00400000) is `DisableKnownFolderTracking`:
+
+> "The SpecialFolderDataBlock and the KnownFolderDataBlock are ignored when loading the shell link. If this bit is set, these extra data blocks SHOULD NOT be saved when saving the shell link."
+
+This flag disables both KnownFolderDataBlock and SpecialFolderDataBlock parsing. But like `ForceNoLinkTrack` for TrackerDataBlock, the blocks may still be physically present in the file even when the flag is set. This will test whether the flag is properly enforced and whether any code path reads the blocks despite the flag.
+
+LinkFlags bits 0x400000 (`DisableKnownFolderTracking`) and 0x1000000 (`DisableKnownFolderAlias`) are extracted as:
+
+```c
+(LinkFlags & 0x400000 | 0x1000000) >> 10
+```
+
+and passed as `dwFlags` to `SHGetKnownFolderIDList_Internal`. They modify resolution behavior rather than blocking the block from being read.
+
+## Security relevant KNOWNFOLDERIDs
+```
+Virtual/shell namespace folders (no filesystem path, create virtual PIDLs):
+```
+  FOLDERID_ControlPanelFolder  {82A74AEB-AEB4-465C-A014-D097EE346D63}  CVE-2017-8464 target
+  FOLDERID_PrintersFolder      {76FC4E2D-D6AD-4519-A663-37BD56068185}  print subsystem
+  FOLDERID_RecycleBinFolder    {B7534046-3ECB-4C18-BE4E-64CD4CB7D6AC}  deletion/restore
+  FOLDERID_NetworkFolder       {D20BEEC4-5CA8-4905-AE3B-BF251EA09B53}  network enumeration
+  FOLDERID_ComputerFolder      {0AC0837C-BBF8-452A-850D-79D08E667CA7}  drive enumeration
+  FOLDERID_ConnectionsFolder   {6F0CD92B-2E97-45D1-88FF-B0D186B8DEDD}  network connections
+```
+
+Writable system folders (attacker may plant files):
+```
+  FOLDERID_CommonStartup       {82A5EA35-D9CD-47C5-9629-E15D2F714E6E}  auto-run on login
+  FOLDERID_ProgramData         {62AB5D82-FDC1-4DC3-A9DD-070D1D495D97}  shared app data
+  FOLDERID_PublicDesktop       {C4AA340D-F20F-4863-AFEF-F87EF2E6BA25}  visible to all users
+```
