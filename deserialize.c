@@ -709,9 +709,10 @@ static int deserialize_extradata(const uint8_t* buf, size_t len, size_t* off, LN
                 }
                 break;
             }
-            case EXTRA_DARWIN:         layout->has_darwin_block      = 1; break;
-            case EXTRA_TRACKER:        layout->has_tracker_block     = 1; break;
-            case EXTRA_KNOWN_FOLDER:   layout->has_knownfolder_block = 1; break;
+            case EXTRA_DARWIN:         layout->has_darwin_block        = 1; break;
+            case EXTRA_TRACKER:        layout->has_tracker_block       = 1; break;
+            case EXTRA_KNOWN_FOLDER:   layout->has_knownfolder_block   = 1; break;
+            case EXTRA_SPECIAL_FOLDER: layout->has_specialfolder_block = 1; break;
             default: break;
         }
     }

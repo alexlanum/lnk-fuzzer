@@ -10,6 +10,31 @@
 #include <math.h>
 #include "clsids.h"
 
+// PRNG: splitmix64 seeder -> xoroshiro128++ generator
+// seeder expands the 64-bit seed into the 128-bit xoroshiro state
+static uint64_t smstate;
+static uint64_t xstate[2];
+
+static uint64_t splitmix64_next(void){
+
+}
+
+static inline uint64_t rotl64(uint64_t x, int k){
+
+}
+
+static uint64_t xoroshiro128pp(void){
+
+}
+
+static uint32_t mutate_rand(void){
+
+}
+
+static double mutate_rand_double(void){
+
+}
+
 /**
  * Scheduler state — Thompson Sampling
  * Each operator and operator group maintain a Beta distribution
@@ -129,7 +154,7 @@ static MutationOperatorGroup op_to_group[MUTATE_COUNT] = {
  * Scheduler infrastructure functions
  */
 // convert uniform random numbers into Gamma-distributed ones (produce Gamma samples)
-static double sample_gamma(double shape){    
+static double sample_gamma(double shape){
     if(shape < 1.0){
         // unlikely that this will trigger
         // Gamma(shape) = Gamma(shape + 1) * U^(1 / shape)
@@ -138,7 +163,7 @@ static double sample_gamma(double shape){
     }
 
     // Marsaglia and Tsang method for shape >= 1
-    double d = shape = 1.0/3.0;
+    double d = shape - 1.0/3.0; // shape - 1/3: shifted mean of the distribution
     double c = 1.0 / sqrt(9.0 * d);
     while(1){
         double x, v;
@@ -2109,6 +2134,9 @@ static void apply_tracker(MutationOperator op, LNKGeneratorState* state){
     }
 }
 
+// GROUP_KNOWNFOLDER KnownFolderDataBlock
+// payload layout inside block->data (20 bytes):
+//   [0..15] KnownFolderID GUID
 static void apply_knownfolder(MutationOperator op, LNKGeneratorState* state){
     static const uint8_t KNOWN_FOLDER_GUIDS[][16] = {
         // virtual namespace folders — no filesystem path, create virtual PIDLs
@@ -2125,7 +2153,31 @@ static void apply_knownfolder(MutationOperator op, LNKGeneratorState* state){
         {0x0D,0x34,0xAA,0xC4,0x0F,0xF2,0x63,0x48,0xAF,0xEF,0xF8,0x7E,0xF2,0xE6,0xBA,0x25}, // PublicDesktop
     };
     #define KNOWN_FOLDER_GUID_COUNT (sizeof(KNOWN_FOLDER_GUIDS) / sizeof(KNOWN_FOLDER_GUIDS[0]))
+    
+    ExtraDataBlock* block = find_extra_block(&state->extradata, EXTRA_KNOWN_FOLDER);
+    if(!block || !block->data) return;
+    if(block->size < 8 + 20) return; // 8 header + 20 payload
+    uint8_t* data = block->data;
 
+    switch(op){
+        case MUTATE_KNOWNFOLDER_GUID_UNKNOWN:{
+            // drive IKnownFolderManager::GetFolder() into a "not found" error path
+            for(int i = 0; i < 15; i++)
+                block->data[i] = rand() & 0xFF;
+            break;
+        }
+
+        case MUTATE_KNOWNFOLDER_OFFSET_OOB:{
+            break;
+        }
+
+        case MUTATE_KNOWNFOLDER_GUID_ZERO:{
+            break;
+        }
+
+        default:
+            break;
+    }
 
 }
 

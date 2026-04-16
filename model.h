@@ -539,6 +539,7 @@ typedef struct {
     int has_darwin_block;
     int has_tracker_block;
     int has_knownfolder_block;
+    int has_specialfolder_block;
 } LNKLayout;
 
 /**
