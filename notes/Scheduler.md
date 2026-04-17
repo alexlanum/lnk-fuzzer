@@ -1,0 +1,165 @@
+
+
+## Decision
+
+In a casino with 16 slot machines. Each machine, when you pull its lever, either outputs a coin (success) or doesn't (fail). You do not know the payout rate of any machine. You have limited pulls. The goal is to maximize coins.
+
+Naive strategy:
+
+- pull every lever equally. Wastes pulls on bad machines.
+
+Greedy strategy:
+
+- pull each lever once, then commit forever to whichever paid out. This fails because you might have gotten unlucky on the best machine's first pull.
+
+Smart strategy:
+
+- keep trying each machine sometimes, but favor the ones that seem to be paying out more often. Balance exploiting what you know against exploring what you don't.
+
+This is called a multi-armed bandit problem, and it is exactly what a scheduler solves in fuzzing.
+
+Applying this to fuzzer architecture:
+
+- each slot machine = a mutation operator, such as `MUTATE_FLAG_SINGLE_BIT`
+- pulling the lever = applying that operator to an LNK file and running it through `Load`
+- getting a coin = AFL++ reported that the mutation produced new coverage (fuzzer reached a basic block in `shell32.dll` it hadn't seen before)
+- maximizing coins = finding as many new branches (and therefore bugs) as possible within your computation budget
+
+The scheduler's job is to determine which mutation operator should be applied next.
+
+
+
+## Do not pick randomly
+
+The scheduler should not choose operators at random (`op = rand() % MUTATE_COUNT`) because the set of operators are wildly uneven:
+
+- `MUTATE_PROPSTORE_VT_VARIANT` finds dozens of new branches in shell32's propstore parser.
+- `MUTATE_TRACKER_VERSION_NONZERO` sets one byte to nonzero, parser likely has one branch on that byte, and once you've hit both sides, it will never produce new coverage again.
+- After an hour, you'd have spent equal time poking the tracker byte (which is saturated) as you have on property store variants (which keep paying off). It is a waste.
+
+You want a scheduler that learns from results and shifts its budget toward productive operators.
+
+
+
+## Thompson Sampling
+
+This is a bandit algorithm from 1993 that has an elegantly simple idea:
+
+> For each arm, maintain a probability distribution over what you *believe* its payout rate might be. When deciding which arm to pull, sample one "belief" from each arm's distribution, and pull the arm whose sampled belief is highest.
+
+This design naturally balances exploration and exploitation. Arms you've pulled a lot have narrow / concentrated beliefs (you're confident about their chance). Arms you've barely tried have wide / uncertain beliefs (they could be anything). The sampling sometimes gives an untried arm a lucky high draw, causing you to explore it. But over time, the best arm's distribution narrows and settles above the others, so its samples consistently beat the rest and it gets picked most often.
+
+In bandit literature, an "arm" is one of the levers on a slot machine. In the fuzzer code, an arm is a single mutation operator or a mutation operator group. "Pulling an arm" means choosing an operator and applying it to an LNK file, then seeing whether AFL++ reports new coverage. "Success rate" represents the fraction of the time that operator produced new coverage when applied.
+
+Strategy 1 (greedy, bad):
+- For each arm, compute the mean of its belief distribution. Pick the arm with the highest mean.
+
+Strategy 2 (Thompson, good):
+- For each arm, draw one random sample from its belief distribution. Pick the arm with the highest sample.
+
+Strategy 1 is deterministic. Given the same counters, it picks the same arm every time. You never explore.
+
+Strategy 2 is stochastic. Given the same counters, it can pick different arms on different calls because the samples are random. This is where exploration comes from.
+
+### Beta distribution
+We need a probability distribution to represent "chance of success." The Beta distribution is the natural choice for this because:
+
+1. Success rates live in [0, 1]. Beta lives in [0, 1].
+2. It has two parameters, $\alpha$ (alpha) and $\Beta$ (beta):
+    - $\alpha$ = 1 + number of successes you've seen
+    - $\Beta$ = 1 + number of failures you've seen
+
+$Beta(1, 1)$ is a flat uniform distribution on [0, 1]. There is no evidence about this operator yet; its new coverage rate could be anything.
+- `MUTATE_STRUCTURE_ADD` just got added and hasn't been chosen yet: $Beta(1, 1)$. Scheduler has zero evidence; it'll happily try it.
+
+$Beta(11, 1)$ means 10 coverage hits, 0 misses. Distribution is concentrated near 1.0. This operator has been extremely productive so far; nearly every mutation it produces unlocks new code paths in shell32.
+- `MUTATE_PROPSTORE_VT_VARIANT` keeps finding new edges because the property-store parser is deep and messy. Drifts toward $Beta(50, 5)$. Scheduler strongly favors it.
+
+$Beta(3, 8)$ means 2 coverage hits, 7 misses. Concentrated around 0.2. This operator occasionally pays off but typically wastes budget.
+- `MUTATE_TRACKER_VERSION_NONZERO` has one branch in the parser; both sides got hit quickly and then nothing new. Drifts toward $Beta(2, 100)$. Scheduler basically stops picking it.
+
+$Beta(501, 501)$ means 500 of each. Razor-sharp spike at 0.5. We can be confident that this operator finds new coverage exactly half the time.
+- `MUTATE_FLAG_SINGLE_BIT` is a jack-of-all-trades: sometimes unlocks coverage, often doesn't. Stabilizes around $Beta(80, 80)$ or similar. Scheduler picks it at medium frequency.
+
+The update rule is simple: pulled arm (used op), got success? $\alpha$ += 1. Got failure? $\Beta$ += 1. This is mathematically optimal Bayesian updating under a Beta prior and Bernoulli outcomes (aka "Beta-Bernoulli conjugacy").
+
+### Full algorithm
+For each mutation operator, keep counters $\alpha$ and $\Beta$, both starting at 1.
+
+To pick which operator to use next:
+- For each operator, sample on number from its $Beta(\alpha, \Beta)$ distribution.
+- Pick the operator whose sample was highest.
+
+After running the fuzzer with the chosen operator:
+- If new coverage found: $\alpha$ += 1 for that operator.
+- Otherwise: $\Beta$ += 1 for that operator.
+
+### Two-level scheduler (hierarchical bandits)
+There are currently 16 groups and ~77 individual operators distributed across them. The scheduler runs Thompson Sampling twice:
+
+1. Across all 16 groups, sample a `0` from each $Beta(group_\alpha[g], group_\Beta[g])$. Pick the group with the highest sample.
+2. Among the operators inside that group, filter to operators whose preconditions are satisfied (ex. an op that mutated ExtraData blocks is useless if the file has none), then Thompson sample among survivors.
+
+This two-layer design allows the scheduler to learn faster.
+
+```c
+// mutate.c
+MutationOperator mutate_apply(LNKGeneratorState* state, LNKLayout* layout){
+    // Lvl 1: Select a group using Thompson Sampling
+    for(int g = 0; g < GROUP_COUNT; g++){
+        double theta = sample_beta(group_alpha[g], group_beta[g]);  // <-- sample from Beta
+        if(theta > best_score){ ... chosen_group = g; }
+    }
+    
+    // Lvl 2: collect operators in that group that satisfy preconditions
+    // ...
+
+    // Thompson sample among candidates
+    for(int i = 0; i < count; i++){
+        double s = sample_beta(op_alpha[candidates[i]], op_beta[candidates[i]]);
+        if(s > best_score){ ... chosen_op = candidates[i]; }
+    }
+
+    op_apply(chosen_op, state, layout);
+    return chosen_op;
+}
+```
+
+### Sampling from a Beta distribution
+
+
+# group/op scheduler (mutate.c)
+
+We have $K$ arms (mutation operators). Each arm either produces coverage or doesn't. We don't know the probability of any operator producing coverage. The scheduler must determine which arms produce coverage and prioritize them over arms that do not.
+
+This is a Bernoulli bandit problem.
+
+$BernTS(K, \alpha, \beta)$ algorithm:
+
+```
+for each round:
+    # sample model
+    for each arm k:
+        sample θ̂_k from Beta(α_k, β_k)
+    
+    # select and apply action
+    pick the arm with the highest θ̂_k
+    apply it, observe success or failure
+    
+    # update distribution
+    if success: α_k += 1
+    if failure: β_k += 1
+```
+
+This specific Thompson Sampling algorithm is used for the scheduler because it is not greedy. Rather than always selecting the operator with the highest estimated mean, it draws a random sample from each operator's Beta distribution and selects the operator whose sample is highest. Because an operator's distribution shape reflects its history, operators with many successes have distributions concentrated near high values, while operators with little data have widely spread distributions. Proven operators win most rounds, but uncertain operators occasionally sample high enough to win. This allows the scheduler to naturally explore underused operators while still favoring ones with proven track records, without needing an explicit exploration parameter.
+
+If the scheduler were to use a greedy algorithm like that of standard AFL, then operator x ($m$ 0.60) would always prevail over operator y ($m$ 0.40) without exploration. Similarly with LibFuzzer, it schedules mutations at random (slightly better than AFL) with no feedback about which operators are productive. MOPT (Optimized Mutation Scheduling) was specially created to solve this problem, but this fuzzer uses it as a fallback rather than a primary design. Thompson Sampling draws a random sample from each operator's Beta distribution, which is what enables exploration of uncertain operators. Thompson Sampling is the scheduler's algorithm of choice because it adapts quicker than MOPT when mutation operator effectiveness changes (coverage saturation will always cause this) and it avoids the local optima that would otherwise be imposed on the scheduler by formerly productive operators.
+
+There's no simple formula to turn a uniform random number into a Beta-distributed random number, meaning we cannot sample from the Beta distribution of each operator directly. To get around this, a formula relating Beta to Gamma is used:
+
+```math
+X \sim \Gamma(\alpha), \quad Y \sim \Gamma(\beta) \quad \Rightarrow \quad \frac{X}{X + Y} \sim \text{Beta}(\alpha, \beta)
+```
+
+Two independent Gamma samples are drawn and combined. Gamma samples are generated using Marsaglia and Tsang's method (2000), a standard rejection sampling algorithm that transforms uniform random numbers into Gamma-distributed values.
+The trick is that if you sample from two Gamma distributions and divide, you get a Beta distribution. Gamma samples can be efficiently generated from uniform random numbers using known algorithms. For this reason, we go through Gamma as an intermediate step to draw samples from the Beta distribution of each operator.
