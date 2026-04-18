@@ -61,13 +61,16 @@ Strategy 1 is deterministic. Given the same counters, it picks the same arm ever
 
 Strategy 2 is stochastic. Given the same counters, it can pick different arms on different calls because the samples are random. This is where exploration comes from.
 
+
+
 ### Beta distribution
+
 We need a probability distribution to represent "chance of success." The Beta distribution is the natural choice for this because:
 
 1. Success rates live in [0, 1]. Beta lives in [0, 1].
-2. It has two parameters, $\alpha$ (alpha) and $\Beta$ (beta):
+2. It has two parameters, $\alpha$ (alpha) and $\beta$ (beta):
     - $\alpha$ = 1 + number of successes you've seen
-    - $\Beta$ = 1 + number of failures you've seen
+    - $\beta$ = 1 + number of failures you've seen
 
 $Beta(1, 1)$ is a flat uniform distribution on [0, 1]. There is no evidence about this operator yet; its new coverage rate could be anything.
 - `MUTATE_STRUCTURE_ADD` just got added and hasn't been chosen yet: $Beta(1, 1)$. Scheduler has zero evidence; it'll happily try it.
@@ -81,23 +84,29 @@ $Beta(3, 8)$ means 2 coverage hits, 7 misses. Concentrated around 0.2. This oper
 $Beta(501, 501)$ means 500 of each. Razor-sharp spike at 0.5. We can be confident that this operator finds new coverage exactly half the time.
 - `MUTATE_FLAG_SINGLE_BIT` is a jack-of-all-trades: sometimes unlocks coverage, often doesn't. Stabilizes around $Beta(80, 80)$ or similar. Scheduler picks it at medium frequency.
 
-The update rule is simple: pulled arm (used op), got success? $\alpha$ += 1. Got failure? $\Beta$ += 1. This is mathematically optimal Bayesian updating under a Beta prior and Bernoulli outcomes (aka "Beta-Bernoulli conjugacy").
+The update rule is simple: pulled arm (used op), got success? $\alpha$ += 1. Got failure? $\beta$ += 1. This is mathematically optimal Bayesian updating under a Beta prior and Bernoulli outcomes (aka "Beta-Bernoulli conjugacy").
+
+
 
 ### Full algorithm
-For each mutation operator, keep counters $\alpha$ and $\Beta$, both starting at 1.
+
+For each mutation operator, keep counters $\alpha$ and $\beta$, both starting at 1.
 
 To pick which operator to use next:
-- For each operator, sample on number from its $Beta(\alpha, \Beta)$ distribution.
+- For each operator, sample on number from its $Beta(\alpha, \beta)$ distribution.
 - Pick the operator whose sample was highest.
 
 After running the fuzzer with the chosen operator:
 - If new coverage found: $\alpha$ += 1 for that operator.
-- Otherwise: $\Beta$ += 1 for that operator.
+- Otherwise: $\beta$ += 1 for that operator.
+
+
 
 ### Two-level scheduler (hierarchical bandits)
+
 There are currently 16 groups and ~77 individual operators distributed across them. The scheduler runs Thompson Sampling twice:
 
-1. Across all 16 groups, sample a `0` from each $Beta(group_\alpha[g], group_\Beta[g])$. Pick the group with the highest sample.
+1. Across all 16 groups, sample a `0` from each $Beta(group_\alpha[g], group_\beta[g])$. Pick the group with the highest sample.
 2. Among the operators inside that group, filter to operators whose preconditions are satisfied (ex. an op that mutated ExtraData blocks is useless if the file has none), then Thompson sample among survivors.
 
 This two-layer design allows the scheduler to learn faster.
@@ -125,7 +134,10 @@ MutationOperator mutate_apply(LNKGeneratorState* state, LNKLayout* layout){
 }
 ```
 
+
+
 ### Generating a number that follows a Beta distribution
+
 Distributions are shapes of randomness:
 
 - Uniform – flat line, every outcome equally likely
@@ -172,10 +184,13 @@ So to produce one Beta sample, you need multiple Gamma samples (rejection loop),
 - If the PRNG is bad (not truly uniform), those 1000 inputs are biased – bias propagates through the math, your Beta outputs would be incorrectly shaped distribution.
 - Result: scheduler makes systematically skewed decisions, not random ones. Bad.
 
+
+
 ### PRNG
+
 `rand()` is a C stdlib function that retusn a "random" integer. There are many possible implementations, and the standard barely constrains them.
 
-On Windows with MSVCRT, `rand()` is a Linear COngruential Generator (LCG):
+On Windows with MSVCRT, `rand()` is a Linear Congruential Generator (LCG):
 ```c
 static unsigned long seed = 1;
 int rand(void) {
@@ -184,28 +199,89 @@ int rand(void) {
 }
 ```
 
-#### `rand()` is unfit for this fuzzer:
 
-1. **15-bit output.** `RAND_MAX = 32767`. Only 32768 distinct values per call. `rand() & 0xFFFF` always has its top bit zero. Beta samples derived from it sit on a coarse discrete grid, so close-ranked operators become indistinguishable late in a campaign.
 
-2. **32-bit period.** Sequence repeats after ~2^31 calls — minutes to hours at fuzzing rates. Exploration silently restarts on already-covered ground.
+Why `rand()` is unfit for this fuzzer:
 
-3. **Weak low bits.** LCG structure means `rand() % small_power_of_2` is patterned, not random.
+**Low resolution.** Only 32768 distinct values per call. Beta samples derived from these uniforms have low resolution, so operators with similar success rates can't be distinguished late in fuzzing.
 
-4. **Modulo bias.** `rand() % N` is non-uniform when N doesn't divide `RAND_MAX + 1`. Worse for larger N.
+**Unreachable high range.** `rand() & 0xFFFF` can never produce values above 32767. Mutations that ask for a random `uint16` silently cover only the bottom half of the range, missing parser branches that trigger on larger values.
 
-5. **Unseeded.** No `srand()` call → every run starts from state 1 → identical sequences across runs. Parallel workers do duplicate work.
+**32-bit period.** The output stream repeats after ~2^31 calls, minutes to hours at fuzzing rates. Once it loops, the fuzzer replays the same mutation choices and re-explores covered code with no signal that this happened.
 
-6. **Global shared state.** Any other code in the process that touches `rand()` corrupts our sequence. Not reproducible.
+**Thread-unsafe global state.** `rand()` is spec'd as a single global generator; any concurrent use corrupts the sequence and there's no way to checkpoint or fork it.
 
-7. **No replay.** Can't checkpoint state → can't deterministically reproduce a crashing mutation later.
+
 
 #### Actual good PRNG
-A good non-cryptographic PRNG has:
+A good (non-cryptographic of course) PRNG has:
+
+1. **A long period**. The "period" is how many calls before the output stream starts repeating. This is about the length of the sequence. Having a longer period fixes the "stream repeats" problem. Sustained fuzzing campaigns don't loop and silently re-explore covered code.
 
 
 
+2. **Full-width output**. Every bit of the return value is uniformly random. A 64-bit return gives you a true 64-bit uniform value, not 15 bits padded with zeros. This fixes the "low resolution" and "unreachable high range" problems: each call yields enough entropy to derive precise Beta samples, full-width `uint16`/`uint32` mutations, and high-precision doubles.
 
+
+
+3. **Statistical quality**. The output stream is indistinguishable from true randomness to any statistical test. Measured empirically by passing test batteries: TestU01's BigCrush is the gold standard, throwing dozens of tests at the generator looking for patterns, correlations, or biases. Without this, derived distributions (Beta samples, Gaussian samples, etc.) will silently inherit whatever structural flaws the PRNG has.
+
+
+
+4. **Speed**. ~5-10 CPU cycles per call, inlined into the caller. `rand()` on MSVCRT is several times slower due to TLS-backed state and the library call boundary. Matters because the scheduler burns ~1000 PRNG calls per mutation decision; a slow PRNG becomes the bottleneck.
+
+
+
+5.  **Seedability**. State can be set explicitly from a known value and checkpointed/restored. The generator becomes a pure function of its seed. Given the same seed, the same stream comes out every time.
+
+
+
+6. **Reproducibility (consequence of 5)**. Crashes can be replayed deterministically months later. AFL++'s minimizer and bisection tools rely on the mutator behaving identically across runs (a separate concern from randomness quality). Without this, every fuzzing campaign is an independent experiment whose results can't be reconstructed.
+
+   
+
+   Reproducible crashes are one benefit of owning your PRNG. When AFL++ saves a crashing input, you can extract the seed and replay the mutation that caused the crash, even months later. Impossible with global `rand()`. Replaying would depend on every prior call in the process and the libc.
+
+
+
+The family of generators that hits all of these is the xoshiro/xoroshiro family (2018). In the case of mutation operator scheduling in a single-threaded fuzzer that needs a 64-bit uniform, xoroshiro128++ makes the most sense. It has:
+
+- 128-bit state (two `uint64_t`s)
+- Period of 2^128 - 1
+- one `ROT`, one `XOR`, one `ADD`, one `ROT` for output; a couple more ops for state update
+- Passes BigCrush PRNG tests (confirmably indistinguishable from true randomness)
+
+There is no need to use xoshiro256++ over xoroshiro128++, as it would only introduce better headroom for resources we will never exhaust.
+
+
+
+### Seeding
+
+xoroshiro128++ has a known degenerate state: if both words of the 128-bit state are zero, the generator emits zero forever. We also want similar seeds to produce dissimilar states. If we seed with `time(null)` in two processes 1s apart, we do not want their outputs to be correlated for the first few million samples.
+
+splitmix64 is a PRNG that solves that. It has trivial state (one `uint64_t` of memory), is a bijection (every 64-bit input maps to a unique 64-bit output), and is specifically designed for seeding other generators. Running a user-supplied 64-bit seed through splitmix64 twice produces two outputs: the xoroshiro128++ state variables.
+
+The probability that splitmix64 produces zero on two consecutive pulls is 2^-128. Astronomically small, essentially never happens. But "essentially never" isn't "never," and the cost of the check is one comparison per program startup. So we check anyway, because a fuzzer that silently outputs zero forever would be the worst possible failure mode: completely deterministic, completely useless, no error message.
+
+```c
+// defensive design to prevent [0, 0] state
+do{
+    xstate[0] = splitmix64_next();
+    xstate[1] = splitmix64_next();
+} while (xstate[0] == 0 && xstate[1] == 0);
+```
+
+splitmix64 is a bijection, meaning it defines perfect 1:1 pairing between input space and output space. Two different input seeds cannot produce the same output. Two adjacent seeds produce two guaranteed distinct splitmix outputs, which become two guaranteed distinct xoroshiro states. The avalanche effect of splitmix64's bijection (one bit flip in input = every output bit has ~50% chance of flipping), produces maximally dissimilar xoroshirostates.
+
+Empirical sequence to follow:
+
+```
+user seed (64 bits)
+    . splitmix64 state
+    . 2 pulls of splitmix64
+    . xoroshiro128++ state (128 bits)
+    . all further random numbers
+```
 
 
 

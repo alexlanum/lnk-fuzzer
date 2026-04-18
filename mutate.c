@@ -11,28 +11,71 @@
 #include "clsids.h"
 
 // PRNG: splitmix64 seeder -> xoroshiro128++ generator
-// seeder expands the 64-bit seed into the 128-bit xoroshiro state
-static uint64_t smstate;
-static uint64_t xstate[2];
+// reasons in notes/PRNG.md
+static uint64_t smstate;   // splitmix64 state, used only for seeding
+static uint64_t xstate[2]; // xoroshiro128++ state, used for all output
 
+// splitmix64: a bijective mixing function.
+// this seeder expands the 64-bit seed into the 128-bit xoroshiro state
+// https://prng.di.unimi.it/splitmix64.c
 static uint64_t splitmix64_next(void){
-
+	uint64_t z = (smstate += 0x9e3779b97f4a7c15);
+	z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9;
+	z = (z ^ (z >> 27)) * 0x94d049bb133111eb;
+	return z ^ (z >> 31);
 }
 
 static inline uint64_t rotl64(uint64_t x, int k){
-
+    k &= 63;                // mask k to 0-63
+    if(k == 0) return x;    // avoid UB on x >> 64 when k = 0
+    return (x << k)         // upper portion of result
+         | (x >> (64 - k)); // lower portion (bits that wrapped around)
 }
 
+// xoroshiro128++ 1.0 https://prng.di.unimi.it/xoroshiro128plusplus.c
 static uint64_t xoroshiro128pp(void){
+    const uint64_t s0 = xstate[0];
+    uint64_t s1 = xstate[1];
+    const uint64_t result = rotl64(s0 + s1, 17) + s0;
+    s1 ^= s0;
+    xstate[0] = rotl64(s0, 49) ^ s1 ^ (s1 << 21);
+    xstate[1] = rotl64(s1, 28);
+    return result;
+}
 
+// seed from a 64-bit input value. Loop guard against the 2^-128 case where splitmix produces zero for both state vars
+static void mutate_rand_seed(uint64_t seed){
+    smstate = seed;
+    do{
+        xstate[0] = splitmix64_next();
+        xstate[1] = splitmix64_next();
+    } while (xstate[0] == 0 && xstate[1] == 0);
+}
+
+static inline uint64_t mutate_rand_uniform64(void){
+    return xoroshiro128pp();
 }
 
 static uint32_t mutate_rand(void){
-
+    return (uint32_t)(xoroshiro128pp() >> 32);
 }
 
-static double mutate_rand_double(void){
+// uniform in [0, n]. For the N values, modulo bias is max n / 2^64, realistically undetectable
+static inline uint32_t mutate_rand_below(uint32_t n){
+    if(n == 0) return 0;
+    return (uint32_t)(mutate_rand_uniform64() % n);
+}
 
+// uniform double in [0, 1] with full 53-bit mantissa precision.
+// can return exactly 0 (probability 2^-53). callers that take log()
+// of the result must guard against that, as shown in sample_gamma.
+static double mutate_rand_double(void){
+    return (double)(xoroshiro128pp() >> 11) * (1.0 / (double)(1ULL << 53));
+}
+
+// biased coin flip. returns 1 with probability p, else 0.
+static inline int mutate_rand_bool(double p){
+    return mutate_rand_double() < p;
 }
 
 /**
@@ -150,15 +193,12 @@ static MutationOperatorGroup op_to_group[MUTATE_COUNT] = {
     [MUTATE_FILE_SECTION_OVERLAP]               = GROUP_FILE,
 };
 
-/**
- * Scheduler infrastructure functions
- */
 // convert uniform random numbers into Gamma-distributed ones (produce Gamma samples)
 static double sample_gamma(double shape){
     if(shape < 1.0){
         // unlikely that this will trigger
         // Gamma(shape) = Gamma(shape + 1) * U^(1 / shape)
-        double u = (double)rand() / RAND_MAX;
+        double u = mutate_rand_double();
         return sample_gamma(shape + 1.0) * pow(u, 1.0 / shape);
     }
 
@@ -168,16 +208,22 @@ static double sample_gamma(double shape){
     while(1){
         double x, v;
         do{
-            // generate standard normal using Box-Muller
-            double u1 = (double)rand() / RAND_MAX;
-            double u2 = (double)rand() / RAND_MAX;
+            double u1, u2;
+            do{
+                u1 = mutate_rand_double();
+            } while (u1 == 0.0);
+            u2 = mutate_rand_double();
             x = sqrt(-2.0 * log(u1)) * cos(2.0 * 3.14159265358979 * u2);
             v = 1.0 + c * x;
         } while (v <= 0.0);
+        
         v = v * v * v;
-        double u = (double)rand() / RAND_MAX;
-        if (u < 1.0 - 0.0331 * (x * x) * (x*x)) return d * v;
-        if (log(u) < 0.5*x*x + d * (1.0 - v + log(v))) return d * v;
+        
+        double u = mutate_rand_double();
+        if(u < 1.0 - 0.0331 * (x * x) * (x*x))
+            return d * v;
+        if(log(u) < 0.5*x*x + d * (1.0 - v + log(v)))
+            return d * v;
     }
 }
 
