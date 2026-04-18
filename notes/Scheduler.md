@@ -125,7 +125,88 @@ MutationOperator mutate_apply(LNKGeneratorState* state, LNKLayout* layout){
 }
 ```
 
-### Sampling from a Beta distribution
+### Generating a number that follows a Beta distribution
+Distributions are shapes of randomness:
+
+- Uniform – flat line, every outcome equally likely
+- Normal – bell curve, values cluster around the average ~0
+- Beta – flexible curve between 0 and 1, can lean left/right/center
+
+The CPU only provides uniform randomness (`rand()`). To get a Beta-distributed shape, we must transform that flat randomness.
+
+```
+Uniform -> [radius, angle] -> Normal -> Gamma -> Beta
+```
+
+**Step 1**: Uniform Foundation
+Start with two uniform numbers from the fair randomness of `rand()`:
+```math
+u_1, u_2 \in [0, 1]
+```
+Using these two uniform numbers, we effectively pick a random point in a 2D square where every spot is equally likely.
+
+**Step 2**: Normal -> Gamma (Box-Muller)
+We turn the square into a circle to create a bell curve. This works because a 2D Normal distribution is perfectly symmetric around the center.
+
+We need Gamma numbers because there is no simple way to turn a Normal bell curve into a Beta curve in step 3.
+
+**Step 3**: Two Gammas -> Beta
+You cannot jump directly from Normal to Beta. You must use the Gamma distribution as a bridge between them, then combine two Gamma values (X, Y) to squeeze the result into the [0,1] range:
+
+```math
+\text{Beta} = \frac{X}{X + Y}
+```
+
+```c
+static double sample_beta(double a, double b){
+    double x = sample_gamma(a);
+    double y = sample_gamma(b);
+    return x / (x + y);
+}
+```
+
+So to produce one Beta sample, you need multiple Gamma samples (rejection loop), each of which needs multiple Normal samples (rejection loop), each of which needs multiple Uniform samples.
+
+- Beta sampler needs many uniform random numbers to produce one Beta value.
+- Scheduler calls the Beta sampler ~93 times, so ~1000 uniform random numbers per decision.
+- If the PRNG is bad (not truly uniform), those 1000 inputs are biased – bias propagates through the math, your Beta outputs would be incorrectly shaped distribution.
+- Result: scheduler makes systematically skewed decisions, not random ones. Bad.
+
+### PRNG
+`rand()` is a C stdlib function that retusn a "random" integer. There are many possible implementations, and the standard barely constrains them.
+
+On Windows with MSVCRT, `rand()` is a Linear COngruential Generator (LCG):
+```c
+static unsigned long seed = 1;
+int rand(void) {
+    seed = seed * 214013 + 2531011;
+    return (seed >> 16) & 0x7FFF;   // returns 15 bits
+}
+```
+
+#### `rand()` is unfit for this fuzzer:
+
+1. **15-bit output.** `RAND_MAX = 32767`. Only 32768 distinct values per call. `rand() & 0xFFFF` always has its top bit zero. Beta samples derived from it sit on a coarse discrete grid, so close-ranked operators become indistinguishable late in a campaign.
+
+2. **32-bit period.** Sequence repeats after ~2^31 calls — minutes to hours at fuzzing rates. Exploration silently restarts on already-covered ground.
+
+3. **Weak low bits.** LCG structure means `rand() % small_power_of_2` is patterned, not random.
+
+4. **Modulo bias.** `rand() % N` is non-uniform when N doesn't divide `RAND_MAX + 1`. Worse for larger N.
+
+5. **Unseeded.** No `srand()` call → every run starts from state 1 → identical sequences across runs. Parallel workers do duplicate work.
+
+6. **Global shared state.** Any other code in the process that touches `rand()` corrupts our sequence. Not reproducible.
+
+7. **No replay.** Can't checkpoint state → can't deterministically reproduce a crashing mutation later.
+
+#### Actual good PRNG
+A good non-cryptographic PRNG has:
+
+
+
+
+
 
 
 # group/op scheduler (mutate.c)
