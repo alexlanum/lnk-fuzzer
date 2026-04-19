@@ -2258,9 +2258,9 @@ static void apply_knownfolder(MutationOperator op, LNKGeneratorState* state){
 
 // GROUP_SPECIALFOLDER SpecialFolderDataBlock
 // payload layout inside block->data (16 bytes):
-//   [0..4]   SpecialFolderID  CSIDL integer (Constant Special Item ID List)
-//   [4..8]   Offset           uint32 offset into IDList for first child segment
-//   [8..16]  Reserved         must be zero per spec
+//   [0..4)   SpecialFolderID  CSIDL integer (Constant Special Item ID List)
+//   [4..8)   Offset           uint32 offset into IDList for first child segment
+//   [8..16)  Reserved         must be zero per spec
 static void apply_specialfolder(MutationOperator op, LNKGeneratorState* state){
     // CSIDL constants of interest. CSIDL_CONTROLS (3) is the CVE-2017-8464
     // attack vector – it switches namespace context to Control Panel and treats
@@ -2288,7 +2288,7 @@ static void apply_specialfolder(MutationOperator op, LNKGeneratorState* state){
         // Note: MUTATE_SPECIALFOLDER_INJECT operates on files that DONT have this block.
         // The other operators require the block to exist.
         case MUTATE_SPECIALFOLDER_INJECT:{
-            // inject a SpecialFolderDataBlock (CVE-2017-8464 reproduction)
+            // Inject a SpecialFolderDataBlock (CVE-2017-8464 reproduction)
             // forces _DecodeSpecialFolder to take the SpecialFolderDataBlock
             // fallback path on inputs that wouldn't normally have the block.
             //
@@ -2317,21 +2317,25 @@ static void apply_specialfolder(MutationOperator op, LNKGeneratorState* state){
                 return;
             }
 
-            uint32_t csidl = 0x003; // CSIDL_CONTROLS
+            uint32_t csidl = 0x0003; // CSIDL_CONTROLS
             memcpy(b->data, &csidl, 4);
             // offset = 0 and reserved bytes stay zero from calloc
             break;
         }
 
         case MUTATE_SPECIALFOLDER_CSIDL:{
-            // _DecodeSpecialFolder uses the CSIDL to look up a shell folder
-            // implementation (CControlPanelFolder, CFontFolder, CPrinterFolder,
-            // etc.). each handler has its own PIDL parsing logic, its own
-            // GetUIObjectOf, and its own path-to-object resolution.
+            // Reach the PIDL walk and translation code paths that only run when
+            // SHCloneSpecialIDList recognizes the CSIDL.
             //
-            // the list is curated to known interesting namespaces (virtual folders,
-            // auto-launch contexts, etc.) rather than random integers.
-            // MUTATE_SPECIALFOLDER_RANDOM handles the "unknown CSIDL" case.
+            // _DecodeSpecialFolder's fallback branch calls SHCloneSpecialIDList(0, CSIDL, 0).
+            // If it returns NULL, the function exits and nothing downstream runs.
+            // If it returns non-null, processing continues into the item boundary walk,
+            // ILCloneCB, both ILValidateInnerPidlIfRooted calls, and TranslateAliasWithEvent.
+            //
+            // The curated CSIDL list is the set of values SHCloneSpecialIDList is known to accept.
+            // Random (unassigned) values return NULL and exit early, wasting the mutation.
+            // MUTATE_SPECIALFOLDER_RANDOM still exists to occasionally exercise the NULL return path
+            // for caller cleanup bugs.
             if(!data) return;
             uint32_t val = CSIDL_INTERESTING[mutate_rand() % CSIDL_INTERESTING_COUNT];
             memcpy(data, &val, 4);
@@ -2339,22 +2343,67 @@ static void apply_specialfolder(MutationOperator op, LNKGeneratorState* state){
         }
 
         case MUTATE_SPECIALFOLDER_RANDOM:{
-            // exercise _DecodeSpecialFolder's error path when the CSIDL doesn't map to
-            // any registered folder. Most CSIDL values above ~0x40 are unassigned.
-            // Negative values, 0xFFFFFFFF, and mid range integers all ret error codes.
-            // Depending on what the caller does (ex. fallback to KnownFolderDataBlock,
-            // leak partially-initialized namespace ctx, return a weird IShellFolder*, etc.),
-            // this could be a viable AS.
-
-
+            // Exercise SHCloneSpecialIDList's NULL return path and the caller cleanup that runs on early exit.
+            // 
+            // _DecodeSpecialFolder's fallback branch has exactly one branch on the CSIDL value:
+            //   SHCloneSpecialIDList returned NULL vs non-null.
+            // It does not distinguish between valid and invalid CSIDLs. All unrecognized values
+            // produce the same early exit.
+            //
+            // The usefulness of this operator depends on what the caller does with teh failed decode.
             if(!data) return;
-            uint32_t val;
-            int r = mutate_rand() % 100;
-            if(r < 30) val = mutate_rand() & 0xFF;
-            else if(4 < 60) val = 0x100 + (mutate_rand() & 0xFFFF);
+            uint32_t val = mutate_rand(); // uniform. any extra weighting would be unjustified bias.
+            memcpy(data, &val, 4);
+            break;
         }
-    }
 
+        case MUTATE_SPECIALFOLDER_OFFSET:{
+            // Corrupt the Offset field in ways that defeat or satisfy the
+            // SHITEMID boundary walk, driving execution toward different
+            // failure paths in _DecodeSpecialFolder.
+            //
+            // The Offset field tells _DecodeSpecialFolder where inside the IDList
+            // the sub-PIDL for the newly-switched-to namespace child context begins.
+            // The walk verifies that Offset lands on a real SHITEMID boundary by stepping
+            // through items one by one and checking if they arrive exactly at IDList + Offset:
+            //
+            //   v12 = IDList base
+            //   v13 = IDList + Offset          (the sub-PIDL start we expect to reach)
+            //   while(v12 && *v12){
+            //       if(v12 >= v13) break;
+            //       v12 += *(uint16*)v12;      // advance by this SHITEMID's cb
+            //   }
+            //   if (v12 != v13) goto cleanup;  // Offset must land EXACTLY on an item boundary
+            //
+            // After the check passes, v13 is passed to ILCloneCB as the sub-PIDL start.
+            // This means Offset ultimately controls which portion of the IDList becomes
+            // the cloned child PIDL that is validated and handed to TranslateAliasWithEvent.
+            if(!data) return;
+            // interesting boundary values that are likely to be past EOF or land mid-structure.
+            // Past-EOF and mid-item offsets fail the v12 == v13 check and exit early.
+            // Offset = 0 satisfies the check trivially (v12 and v13 both equal the IDList base,
+            // so the full IDList gets cloned).
+            // An Offset landing on a real item boundary (sum of first N items' cb values) satisfies
+            // the check and proceeds into ILCloneCB -> ILValidateInnerPidlIfRooted -> TranslateAliasWithEvent,
+            // which is where interesting bugs live.
+            uint32_t boundaries[] = {
+                0,                                      // zero trivially passes the walk check, ILCloneCB gets offset 0
+                0xFFFFFFFF,                             // MAX_UINT, definitely past EOF
+                0x80000000,                             // negative int32, maybe signedness bug
+                0xFFFF,                                 // max uint16, maybe casting boundary
+                state->linktargetidlist.total_size,     // IDList end
+                state->linktargetidlist.total_size + 1, // 1 past
+                state->linktargetidlist.total_size - 1, // 1 short of end, lands one byte before terminator
+                4,                                      // 4 bytes in, inside first item's payload; passes only if first item has cb == 4
+            };
+            uint32_t val = boundaries[mutate_rand() % (sizeof(boundaries) / sizeof(boundaries[0]))];
+            memcpy(data + 4, &val, 4);
+            break;
+        }
+
+        default:
+            break;
+    }
 }
 
 // do mutation
