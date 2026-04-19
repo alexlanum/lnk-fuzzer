@@ -2183,7 +2183,8 @@ static void apply_tracker(MutationOperator op, LNKGeneratorState* state){
 
 // GROUP_KNOWNFOLDER KnownFolderDataBlock
 // payload layout inside block->data (20 bytes):
-//   [0..15] KnownFolderID GUID
+//   [0..16]   KnownFolderID  GUID
+//   [16..20]  Offset         uint32 offset into IDList where the first child segment of the namespace ctx begins
 static void apply_knownfolder(MutationOperator op, LNKGeneratorState* state){
     static const uint8_t KNOWN_FOLDER_GUIDS[][16] = {
         // virtual namespace folders — no filesystem path, create virtual PIDLs
@@ -2208,22 +2209,150 @@ static void apply_knownfolder(MutationOperator op, LNKGeneratorState* state){
 
     switch(op){
         case MUTATE_KNOWNFOLDER_GUID_UNKNOWN:{
-            // drive IKnownFolderManager::GetFolder() into a "not found" error path
-            for(int i = 0; i < 15; i++)
-                block->data[i] = mutate_rand() & 0xFF;
+            // drive IKnownFolderManager::GetFolder() into a "not found" error path.
+            // either pick a known GUID from KNOWN_FOLDER_GUIDS (likely valid but wrong for LNK),
+            // or random bytes (almost certainly unregistered). 50/50 split.
+            if(mutate_rand_bool(0.5)){
+                int idx = mutate_rand() % KNOWN_FOLDER_GUID_COUNT;
+                memcpy(data, KNOWN_FOLDER_GUIDS[idx], 16);
+            } else{
+                for(int i = 0; i < KNOWN_FOLDER_GUID_COUNT; i++)
+                    data[i] = mutate_rand() & 0xFF;
+            }
             break;
         }
 
         case MUTATE_KNOWNFOLDER_OFFSET_OOB:{
+            // interesting boundary values that are likely to be past EOF or land mid-structure
+            uint32_t boundaries[] = {
+                0xFFFFFFFF,                             // MAX_UINT, definitely past EOF
+                0x80000000,                             // negative int32, maybe signedness bug
+                0xFFFF,                                 // max uint16, maybe casting boundary
+                state->linktargetidlist.total_size,     // IDList end
+                state->linktargetidlist.total_size + 1, // 1 past
+                state->linktargetidlist.total_size - 1, // mid item
+                0,                                      // zero offset, refers back to root
+                4,                                      // tiny offset, lands inside size prefix of first item in IDList
+            };
+            uint32_t val = boundaries[mutate_rand() % (sizeof(boundaries) / sizeof(boundaries[0]))];
+            memcpy(data + 16, &val, 4);
             break;
         }
 
         case MUTATE_KNOWNFOLDER_GUID_ZERO:{
+            // GUID_NULL. CKnownFolderManager::GetFolder does NOT check the GUID
+            // before calling CKFFacade::GetFolderDefinition. an all zero GUID
+            // flows straight into the lookup and returns 0x80070002 ERROR_FILE_NOT_FOUND.
+            // the value of this mutation is in the error path. it forces the caller into
+            // whatever cleanup or fallback code runs on GetFolder failure, which in LNK
+            // resolution context means the SpecialFolderDataBlock fallback path if the LNK
+            // has one, or outright resolution failure if it doesn't have one.
+            memset(data, 0, 16);
             break;
         }
 
         default:
             break;
+    }
+}
+
+// GROUP_SPECIALFOLDER SpecialFolderDataBlock
+// payload layout inside block->data (16 bytes):
+//   [0..4]   SpecialFolderID  CSIDL integer (Constant Special Item ID List)
+//   [4..8]   Offset           uint32 offset into IDList for first child segment
+//   [8..16]  Reserved         must be zero per spec
+static void apply_specialfolder(MutationOperator op, LNKGeneratorState* state){
+    // CSIDL constants of interest. CSIDL_CONTROLS (3) is the CVE-2017-8464
+    // attack vector – it switches namespace context to Control Panel and treats
+    // the LinkTargetIDList path as a CPL module to LoadLibrary.
+    static const uint32_t CSIDL_INTERESTING[] = {
+        0x0003, // CSIDL_CONTROLS Control Panel
+        0x0014, // CSIDL_FONTS Fonts folder (special namespace handler)
+        0x0004, // CSIDL_PRINTERS Printers folder
+        0x0008, // CSIDL_STARTUP auto-launch context
+        0x0017, // CSIDL_COMMON_STARTUP
+        0x0011, // CSIDL_DRIVES My Computer
+        0x0012, // CSIDL_NETWORK
+        0x000A, // CSIDL_BITBUCKET Recycle Bin
+        0x0026, // CSIDL_PROGRAM_FILES
+        0x0028, // CSIDL_PROFILE
+    };
+    #define CSIDL_INTERESTING_COUNT (sizeof(CSIDL_INTERESTING) / sizeof(CSIDL_INTERESTING[0]))
+
+    ExtraDataBlock* block = find_extra_block(&state->extradata, EXTRA_SPECIAL_FOLDER);
+    uint8_t* data = NULL;
+    if(block && block->data && block->size >= 8 + 16)
+        data = block->data;
+    
+    switch(op){
+        // Note: MUTATE_SPECIALFOLDER_INJECT operates on files that DONT have this block.
+        // The other operators require the block to exist.
+        case MUTATE_SPECIALFOLDER_INJECT:{
+            // inject a SpecialFolderDataBlock (CVE-2017-8464 reproduction)
+            // forces _DecodeSpecialFolder to take the SpecialFolderDataBlock
+            // fallback path on inputs that wouldn't normally have the block.
+            //
+            // _DecodeSpecialFolder tries KnownFolderDataBlock first, falls back to
+            // SpecialFolderDataBlock only if the known-folder block is absent. With
+            // CSIDL_CONTROLS, this routes into SHCloneSpecialIDList -> PIDL walk ->
+            // ILCloneCB -> TranslateAliasWithEvent, which is the CVE-2017-8464
+            // namespace-switch path. Post-patch _IsRegisteredCPLApplet mitigates
+            // the original CPL load, but the surrounding validation and translation
+            // code (ILValidateInnerPidlIfRooted, TranslateAliasWithEvent, _SetPIDLPath)
+            // was not similarly hardened and remains productive fuzz surface.
+            //
+            // Offset = 0 is deliberate: it makes v12 == v13 trivially true (both equal
+            // the IDList base), which bypasses the item-boundary walk and hands the
+            // full IDList to ILCloneCB unchanged.
+            if(block) return;
+            if(state->extradata.block_count >= MAX_EXTRA_DATA_BLOCKS) return;
+
+            ExtraDataBlock* b = &state->extradata.blocks[state->extradata.block_count++];
+            b->type = EXTRA_SPECIAL_FOLDER;
+            b->size = 8 + 16;
+            b->data = calloc(16, 1);
+
+            if(!b->data){ // fail alloc
+                state->extradata.block_count--;
+                return;
+            }
+
+            uint32_t csidl = 0x003; // CSIDL_CONTROLS
+            memcpy(b->data, &csidl, 4);
+            // offset = 0 and reserved bytes stay zero from calloc
+            break;
+        }
+
+        case MUTATE_SPECIALFOLDER_CSIDL:{
+            // _DecodeSpecialFolder uses the CSIDL to look up a shell folder
+            // implementation (CControlPanelFolder, CFontFolder, CPrinterFolder,
+            // etc.). each handler has its own PIDL parsing logic, its own
+            // GetUIObjectOf, and its own path-to-object resolution.
+            //
+            // the list is curated to known interesting namespaces (virtual folders,
+            // auto-launch contexts, etc.) rather than random integers.
+            // MUTATE_SPECIALFOLDER_RANDOM handles the "unknown CSIDL" case.
+            if(!data) return;
+            uint32_t val = CSIDL_INTERESTING[mutate_rand() % CSIDL_INTERESTING_COUNT];
+            memcpy(data, &val, 4);
+            break;
+        }
+
+        case MUTATE_SPECIALFOLDER_RANDOM:{
+            // exercise _DecodeSpecialFolder's error path when the CSIDL doesn't map to
+            // any registered folder. Most CSIDL values above ~0x40 are unassigned.
+            // Negative values, 0xFFFFFFFF, and mid range integers all ret error codes.
+            // Depending on what the caller does (ex. fallback to KnownFolderDataBlock,
+            // leak partially-initialized namespace ctx, return a weird IShellFolder*, etc.),
+            // this could be a viable AS.
+
+
+            if(!data) return;
+            uint32_t val;
+            int r = mutate_rand() % 100;
+            if(r < 30) val = mutate_rand() & 0xFF;
+            else if(4 < 60) val = 0x100 + (mutate_rand() & 0xFFFF);
+        }
     }
 
 }
@@ -2244,6 +2373,7 @@ static void op_apply(MutationOperator op, LNKGeneratorState* state, LNKLayout* l
         case GROUP_DARWIN:        apply_darwin(op, state);        break;
         case GROUP_TRACKER:       apply_tracker(op, state);       break;
         case GROUP_KNOWNFOLDER:   apply_knownfolder(op, state);   break;
+        case GROUP_SPECIALFOLDER: apply_specialfolder(op, state); break;
         // add more...
 
         default: break;
