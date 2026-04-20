@@ -235,16 +235,52 @@ static double sample_beta(double a, double b){
     return x / (x + y); // Beta = x / (x + y)
 }
 
+// true if the propstore has at least one value across all its storages
+static int propstore_has_any_value(SerializedPropertyStore* ps){
+    for(int i = 0; i < ps->storage_count; i++)
+        if(ps->storages[i].value_count > 0)
+            return 1;
+    return 0;
+}
+
+// true if at least one storage has >= 2 values (needed for DUPLICATE_PID)
+static int propstore_storage_has_2plus_vals(SerializedPropertyStore* ps){
+    for(int i = 0; i < ps->storage_count; i++)
+        if(ps->storages[i].value_count >= 2)
+            return 1;
+    return 0;
+}
+
 // check if an operator is valid for this input by ensuring satisfaction of required preconditions
 static int op_precondition(MutationOperator op, LNKGeneratorState* state, LNKLayout* layout){
     switch(op){
+        // GROUP_STRUCTURE: no precondition. all ops touch header.link_flags, which always exists.
+        case MUTATE_STRUCTURE_ADD:
+        case MUTATE_STRUCTURE_REMOVE:
+        case MUTATE_STRUCTURE_DESYNC_FLAG:
+            return 1;
+
+        // GROUP_FLAGS: no precondition. all ops touch header.link_flags, which always exists.
         case MUTATE_FLAG_SINGLE_BIT:
         case MUTATE_FLAG_ALL_SET:
         case MUTATE_FLAG_ALL_CLEAR:
         case MUTATE_FLAG_RESERVED_BITS:
         case MUTATE_FLAG_DESYNC_ISUNICODE:
-            return 1; // no precondition, header always exists
+            return 1;
         
+        // GROUP_SIZES: needs at least one section with a size field that can be targeted.
+        // apply_sizes() has its own runtime fallback (returns if tcount == 0 (no targets)).
+        // checking this lets the scheduler skip picking this op entirely when nothing is valid.
+        case MUTATE_SIZE_ZERO:
+        case MUTATE_SIZE_UNDERFLOW:
+        case MUTATE_SIZE_DESYNC:
+        case MUTATE_SIZE_BOUNDARY:
+            return layout->has_link_target_idlist
+                || layout->has_linkinfo
+                || (layout->has_extradata && state->extradata.block_count > 0)
+                || layout->has_propstore_block;
+
+        // GROUP_PIDL: need at least the PIDL structure
         case MUTATE_PIDL_INSERT_ITEM:
         case MUTATE_PIDL_DEPTH:
             return layout->has_link_target_idlist; // item_count < 0 allowed bc these add items, the rest need something already there
@@ -261,6 +297,7 @@ static int op_precondition(MutationOperator op, LNKGeneratorState* state, LNKLay
         case MUTATE_PIDL_DELEGATEITEMID:
             return layout->has_link_target_idlist && state->linktargetidlist.item_count > 0;
 
+        // GROUP_OFFSETS
         case MUTATE_OFFSET_ZERO:
         case MUTATE_OFFSET_PAST_EOF:
         case MUTATE_OFFSET_OVERLAP:
@@ -268,7 +305,104 @@ static int op_precondition(MutationOperator op, LNKGeneratorState* state, LNKLay
         case MUTATE_OFFSET_CHAIN:
             return layout->has_linkinfo || layout->has_knownfolder_block; // at least one offset field must be present to target
 
-        // add more as i go ...
+        // GROUP_EXTRA_SEQ: ExtraData block list level operators
+        // INSERT adds a block, so an empty list is fine as long as there's room.
+        // all others need at least one existing block to operate on.
+        case MUTATE_EXTRA_INSERT_BLOCK:
+            return layout->has_extradata && state->extradata.block_count < MAX_EXTRA_DATA_BLOCKS;
+        case MUTATE_EXTRA_REMOVE_BLOCK:
+        case MUTATE_EXTRA_DUPLICATE_BLOCK:
+        case MUTATE_EXTRA_MISSING_TERMINATOR:
+        case MUTATE_EXTRA_EARLY_TERMINATOR:
+            return layout->has_extradata && state->extradata.block_count > 0;
+        case MUTATE_EXTRA_REORDER_BLOCKS:
+            // reorder needs >= 2 blocks or its a NOP
+            return layout->has_extradata && state->extradata.block_count >= 2;
+
+        // GROUP_EXTRA_HDR: corrupt individual block headers, needs >= 1 block
+        case MUTATE_BLOCK_SIZE_ZERO:
+        case MUTATE_BLOCK_SIZE_UNDERFLOW:
+        case MUTATE_BLOCK_SIZE_OVERFLOW:
+        case MUTATE_BLOCK_SIGNATURE_UNKNOWN:
+        case MUTATE_BLOCK_SIGNATURE_WRONG:
+            return layout->has_extradata && state->extradata.block_count > 0;
+
+        // GROUP_PROPSTORE_SET: storage level operators, need PropertyStoreDataBlock
+        // and at least one storage to operate on
+        case MUTATE_PROPSTORE_STORAGE_SIZE_ZERO:
+        case MUTATE_PROPSTORE_STORAGE_SIZE_UNDERFLOW:
+        case MUTATE_PROPSTORE_STORAGE_SIZE_DESYNC:
+        case MUTATE_PROPSTORE_STORAGE_SIZE_128MB:
+        case MUTATE_PROPSTORE_VERSION_WRONG:
+        case MUTATE_PROPSTORE_FORMAT_ID_RANDOM:
+        case MUTATE_PROPSTORE_FORMAT_ID_STRING_NAMED:
+        case MUTATE_PROPSTORE_NAMING_MISMATCH:
+        case MUTATE_PROPSTORE_MISSING_TERMINATOR:
+            return layout->has_propstore_block && state->propstore.storage_count > 0;
+        case MUTATE_PROPSTORE_DUPLICATE_FORMAT_ID:
+        case MUTATE_PROPSTORE_EARLY_TERMINATOR:
+            // need >= 2 storages. duplicate needs another in order to copy the FMTID into.
+            // EARLY_TERMINATOR places the terminator before the last storage
+            return layout->has_propstore_block && state->propstore.storage_count >= 2;
+        
+        // GROUP_PROPSTORE_VAL: value level operators, need >= 1 storage with >= 1 value
+        case MUTATE_PROPSTORE_VALUE_SIZE_ZERO:
+        case MUTATE_PROPSTORE_VALUE_SIZE_UNDERFLOW:
+        case MUTATE_PROPSTORE_VALUE_SIZE_DESYNC:
+        case MUTATE_PROPSTORE_RESERVED_NONZERO:
+        case MUTATE_PROPSTORE_MISSING_VALUE_TERMINATOR:
+            return layout->has_propstore_block
+                && state->propstore.storage_count > 0
+                && propstore_has_any_value(&state->propstore);
+        case MUTATE_PROPSTORE_DUPLICATE_PID:
+            // need a s torage with >= 2 values so one PID can dupe another's
+            return layout->has_propstore_block
+                && propstore_storage_has_2plus_vals(&state->propstore);
+
+        // GROUP_PROPSTORE_TPV: TypedPropertyValue operators, need >= 1 value
+        case MUTATE_PROPSTORE_VT_INVALID:
+        case MUTATE_PROPSTORE_VT_BYREF:
+        case MUTATE_PROPSTORE_VT_VECTOR:
+        case MUTATE_PROPSTORE_VT_STREAM:
+        case MUTATE_PROPSTORE_VT_VARIANT:
+        case MUTATE_PROPSTORE_VT_RESERVED:
+        case MUTATE_PROPSTORE_PADDING_NONZERO:
+        case MUTATE_PROPSTORE_FORCE_MISALIGN:
+            return layout->has_propstore_block
+                && state->propstore.storage_count > 0
+                && propstore_has_any_value(&state->propstore);
+        
+        // GROUP_DARWIN: needs DarwinDataBlock
+        case MUTATE_DARWIN_FORMAT_STRING:
+        case MUTATE_DARWIN_OVERLONG:
+        case MUTATE_DARWIN_INVALID_GUID:
+        case MUTATE_DARWIN_NULL_BYTES:
+        case MUTATE_DARWIN_RANDOM:
+            return layout->has_darwin_block;
+
+        // GROUP_TRACKER: needs TrackerDataBlock
+        case MUTATE_TRACKER_LENGTH_WRONG:
+        case MUTATE_TRACKER_VERSION_NONZERO:
+        case MUTATE_TRACKER_DROID_CORRUPT:
+        case MUTATE_TRACKER_MACHINE_ID_CORRUPT:
+            return layout->has_tracker_block;
+
+        // GROUP_SPECIALFOLDER: INJECT needs SpecialFolderDataBlock absent (it adds one);
+        // the rest need SpecialFolderDataBlock present
+        case MUTATE_SPECIALFOLDER_INJECT:
+            return !layout->has_specialfolder_block
+                && state->extradata.block_count < MAX_EXTRA_DATA_BLOCKS;
+        case MUTATE_SPECIALFOLDER_CSIDL:
+        case MUTATE_SPECIALFOLDER_RANDOM:
+        case MUTATE_SPECIALFOLDER_OFFSET:
+            return layout->has_specialfolder_block;
+
+        // GROUP_FILE: always valid. these operate on the serialized byte buffer,
+        // which always exists after serialize() runs.
+        case MUTATE_FILE_TRUNCATE:
+        case MUTATE_FILE_APPEND_GARBAGE:
+        case MUTATE_FILE_SECTION_OVERLAP:
+            return 1;
 
         default:
             return 0; // not implemented
@@ -315,6 +449,7 @@ static void apply_structure(MutationOperator op, LNKGeneratorState* state){
             // enable a section flag for a section that does not exist
             // parser expects data that is not there
             state->header.link_flags |= flags[mutate_rand() % 9];
+            break;
         }
 
         case MUTATE_STRUCTURE_REMOVE:{
