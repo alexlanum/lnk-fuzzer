@@ -2473,11 +2473,6 @@ static void apply_file(MutationOperator op, LNKGeneratorState* state){
     }
 }
 
-static void apply_count(MutationOperator op, LNKGeneratorState* state){
-
-}
-
-
 // do mutation
 static void op_apply(MutationOperator op, LNKGeneratorState* state, LNKLayout* layout){
     switch(op_to_group[op]){
