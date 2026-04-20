@@ -397,6 +397,12 @@ static int op_precondition(MutationOperator op, LNKGeneratorState* state, LNKLay
         case MUTATE_SPECIALFOLDER_OFFSET:
             return layout->has_specialfolder_block;
 
+        // GROUP_KNOWNFOLDER
+        case MUTATE_KNOWNFOLDER_GUID_UNKNOWN:
+        case MUTATE_KNOWNFOLDER_GUID_ZERO:
+        case MUTATE_KNOWNFOLDER_OFFSET_OOB:
+            return layout->has_knownfolder_block;
+
         // GROUP_FILE: always valid. these operate on the serialized byte buffer,
         // which always exists after serialize() runs.
         case MUTATE_FILE_TRUNCATE:
