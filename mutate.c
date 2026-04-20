@@ -2496,7 +2496,6 @@ static void op_apply(MutationOperator op, LNKGeneratorState* state, LNKLayout* l
         case GROUP_KNOWNFOLDER:   apply_knownfolder(op, state);   break;
         case GROUP_SPECIALFOLDER: apply_specialfolder(op, state); break;
         case GROUP_FILE:          apply_file(op, state);          break;
-        case GROUP_COUNT:         apply_count(op, state);         break;
         default: break;
     }
 }
