@@ -543,6 +543,22 @@ typedef struct {
 } LNKLayout;
 
 /**
+ * Post-serialization mutation operator. Most mutations operate on the parsed LNKGeneratorState,
+ * but GROUP_FILE operates on raw bytes and so it must be applied after serialize() produces the
+ * byte buffer (.lnk file). The mutation operator dispatcher (op_apply()) sets these fields; the
+ * harness reads them after serialization and applies the corresponding byute-level mutation before
+ * submitting the mutated byte buffer to AFL++.
+ *
+ * postserialize_op == POSTSERIALIZE_NONE means no post-serialize mutation requested.
+ */
+typedef enum {
+    POSTSERIALIZE_NONE = -1,
+    POSTSERIALIZE_TRUNCATE,        // cut off final N bytes. N stored in postserialize_arg
+    POSTSERIALIZE_APPEND_GARBAGE,  // append N random bytes. N stored in postserialize_arg
+    POSTSERIALIZE_SECTION_OVERLAP, // shrink a section size field so the next section overlaps
+} PostSerializeOp;
+
+/**
  * Structured model used to generate and serialize an LNK file.
  * This represents the configuration for all major LNK structures that
  * shall exist when constructing a single input. Each corpus entry
@@ -560,6 +576,10 @@ typedef struct {
     SerializedPropertyStore     propstore;
     TrackerDataBlockPayload     tracker;
     KnownFolderDataBlockPayload knownfolder;
+
+    // post-serialization mutation request (set by GROUP_FILE ops)
+    int postserialize_op;  // PostSerializeOp value, or POSTSERIALIZE_NONE
+    int postserialize_arg; // operator-specific argument (len, offset, etc.)
 } LNKGeneratorState;
 
 #endif

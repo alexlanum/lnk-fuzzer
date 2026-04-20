@@ -2406,6 +2406,78 @@ static void apply_specialfolder(MutationOperator op, LNKGeneratorState* state){
     }
 }
 
+// GROUP_FILE is architecturally different from every other group.
+// Other groups operate on LNKGeneratorState (parsed state) and the
+// mutations are applied directly to that structure. GROUP_FILE operates
+// on the raw byte buffer of the LNK file, which doesn't exist yet when
+// op_apply (operator dispatcher) runs.
+//
+// Design: apply_file does not mutate anything. It stores a post-serialize
+// request on the state (postserialize_op + postserialize_arg). After
+// serialize() produces the LNK file byte buffer, the harness reads that
+// request and applies the actual byte-level mutation (truncate, append, overlap)
+// before submitting to AFL++.
+static void apply_file(MutationOperator op, LNKGeneratorState* state){
+    switch(op){
+        case MUTATE_FILE_TRUNCATE:{
+            // cut n bytes off the end of the serialized file
+            int r = mutate_rand() % 100;
+            int n;
+            if(r < 30)
+                n = 1 + (mutate_rand() % 8); // tiny, kills ExtraData 4-byte term, parser reads past EOF looking for next block
+            else if(r < 60)
+                n = 1 + (mutate_rand() % 64); // small, drops an entire ExtraData block, tests handling when a block is declared present but isnt
+            else if(r < 85)
+                n = 64 + (mutate_rand() % 256); // medium, truncates inside an ExtraData block's payload, produces a block with partial data
+            else
+                n = 256 + (mutate_rand() % 1024); // large, lands inside PropertyStore or PIDL, produces malformed structure
+            state->postserialize_op  = POSTSERIALIZE_TRUNCATE;
+            state->postserialize_arg = n;
+            break;
+        }
+
+        case MUTATE_FILE_APPEND_GARBAGE:{
+            // append random bytes after the ExtraData terminator to test whether shell32 keeps reading under any circumstance.
+            // the ExtraData parser is supposed to stop at a block with cb 00 (terminator). If it doesn't, if it reads past the
+            // terminator and interprets the appended bytes as another block hdr, the mutation effectively produces a block whose
+            // size and signature are attacker-controlled. Large appends are weighted higher bc they're more likely to contain
+            // plausible looking block headers by chance.
+            int r = mutate_rand() % 100;
+            int n;
+            if(r < 40)
+                n = 1 + (mutate_rand() % 16); // small amnt of trailing garbage data
+            else if(r < 75)
+                n = 16 + (mutate_rand() % 256); // moderate
+            else
+                n = 256 + (mutate_rand() % 4096); // large, maybe parsed as new block somehow lol
+            state->postserialize_op = POSTSERIALIZE_APPEND_GARBAGE;
+            state->postserialize_arg = n;
+            break;
+        }
+
+        case MUTATE_FILE_SECTION_OVERLAP:{
+            // request the harness to find a size field and shrink it so the next section overlaps.
+            // the section choice is made after serialization because it depends on the byte layout.
+            // arg is a hint at which section to target:
+            //   0 = IDList
+            //   1 = LinkInfo
+            //   2 = StringData
+            //   3 = First ExtraData block
+            state->postserialize_op = POSTSERIALIZE_SECTION_OVERLAP;
+            state->postserialize_arg = mutate_rand() % 4;
+            break;
+        }
+
+        default:
+            break;
+    }
+}
+
+static void apply_count(MutationOperator op, LNKGeneratorState* state){
+
+}
+
+
 // do mutation
 static void op_apply(MutationOperator op, LNKGeneratorState* state, LNKLayout* layout){
     switch(op_to_group[op]){
@@ -2423,8 +2495,8 @@ static void op_apply(MutationOperator op, LNKGeneratorState* state, LNKLayout* l
         case GROUP_TRACKER:       apply_tracker(op, state);       break;
         case GROUP_KNOWNFOLDER:   apply_knownfolder(op, state);   break;
         case GROUP_SPECIALFOLDER: apply_specialfolder(op, state); break;
-        // add more...
-
+        case GROUP_FILE:          apply_file(op, state);          break;
+        case GROUP_COUNT:         apply_count(op, state);         break;
         default: break;
     }
 }
