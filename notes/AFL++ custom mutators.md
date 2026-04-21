@@ -76,4 +76,4 @@ size_t afl_custom_fuzz(
 }
 ```
 
-[mutated bytes]    ↓ return to AFL++ AFL++ runs the target on the bytes AFL++ checks coverage    ↓ AFL++ picks another seed entry, cycle starts over
+After your `afl_custom_fuzz` returns the mutated bytes to AFL, AFL gives the bytes to the target (harness exe) as input, runs it, and checks coverage after the run. Then it calls `afl_custom_fuzz` again, usually with the same seed entry, expecting your mutator to produce a *different* mutation this time. After it finishes its assigned thousands of iterations on that seed, AFL moves onto a different queue entry. This repeats millions of times throughout the fuzzing campaign.

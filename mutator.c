@@ -36,6 +36,32 @@ typedef struct lnk_mutator{
                               // reused on each afl_custom_fuzz call
 } lnk_mutator_t;
 
+// frees everything deserialize_lnk allocates and zeroes the struct so stale
+// pointers can't be accidentally reused. call this at the end of every
+// afl_custom_fuzz cycle to avoid LNKGeneratorState memory leak.
+static void state_free(LNKGeneratorState* state){
+    // PIDL items: each has a raw + payload buffer
+    for(int i = 0; i < state->linktargetidlist.item_count; i++){
+        ItemID* item = &state->linktargetidlist.items[i];
+        free(item->raw);
+        free(item->payload);
+    }
+
+    // StringData strings
+    free(state->stringdata.name);
+    free(state->stringdata.relative_path);
+    free(state->stringdata.working_dir);
+    free(state->stringdata.arguments);
+    free(state->stringdata.icon_location);
+
+    // ExtraData block payloads
+    for(int i = 0; i < state->extradata.block_count; i++)
+        free(state->extradata.blocks[i].data);
+
+    // zero the struct so stale pointers can't be accidentally reused
+    memset(state, 0, sizeof(*state));
+}
+
 size_t afl_custom_fuzz(
     lnk_mutator_t* mutator,
     uint8_t* buf,
@@ -74,16 +100,14 @@ size_t afl_custom_fuzz(
     // 1. parse the seed bytes into LNKGeneratorState (deserialize them)
     if(deserialize_lnk(buf, buf_size, &mutator->state) < 0){
         // unparseable seed, pass it through unchanged so AFL++ still has input
-        size_t n = buf_size > max_size ? max_size : buf_size;
+        size_t n = buf_size;
+        if(n > max_size){
+            n = max_size;
+        }
         memcpy(mutator->out_buf, buf, n);
         *out_buf = mutator->out_buf;
         return n;
     }
-
-    // reset the postserialize request slot. deserialize memsets state to 0,
-    // which makes postserialize_op = POSTSERIALIZE_TRUNCATE = 0 not NONE = -1.
-    mutator->state.postserialize_op = POSTSERIALIZE_NONE;
-    mutator->state.postserialize_arg = 0;
 
     // 2. run Thompson Sampling scheduler to pick and apply an operator
     LNKLayout layout = mutate_extract_layout(&mutator->state); // extract layout from a deserialized state
@@ -91,13 +115,56 @@ size_t afl_custom_fuzz(
     mutator->last_op = op;
 
     if((int)op < 0){
-        // no valid operator for this input, pass seed through unchanged
+        // no valid operator for this input, return the original seed bytes unchanged as if we did nothing
         state_free(&mutator->state);
-        size_t n = buf_size > max_size ? max_size : buf_size;
+        size_t n = buf_size;
+        if(n > max_size){
+            n = max_size;
+        }
         memcpy(mutator->out_buf, buf, n);
         *out_buf = mutator->out_buf;
         return n;
     }
 
-    
+    // 3. convert the mutated LNKGeneratorState back to bytes (serialize it)
+    size_t out_len = 0;
+    if(serialize_lnk(mutator->out_buf, mutator->out_cap, &out_len, &mutator->state) < 0){
+        // serialization failed (likely: buffer too small), return the original seed bytes unchanged as if we did nothing
+        state_free(&mutator->state);
+        size_t n = buf_size;
+        if(n > max_size){
+            n = max_size;
+        }
+        memcpy(mutator->out_buf, buf, n);
+        *out_buf = mutator->out_buf;
+        return n;
+    }
+
+    // 4. apply GROUP_FILE post-serialize operator if one was requested
+    if(mutator->state.postserialize_op != POSTSERIALIZE_NONE){
+        int pop = mutator->state.postserialize_op;
+        int parg = mutator->state.postserialize_arg;
+
+        if(pop == POSTSERIALIZE_TRUNCATE){
+            int n = parg;
+            if(n < 1) n = 1;
+            if((size_t)n >= out_len) n = (int)out_len - 1;
+            if(n > 0) out_len -= (size_t)n;
+        } else if(pop == POSTSERIALIZE_APPEND_GARBAGE){
+            size_t n = (size_t)parg;
+            size_t new_len = out_len + n;
+            if(new_len > max_size) new_len = max_size;
+            for(size_t i = out_len; i < new_len; i++)
+                mutator->out_buf[i] = (uint8_t)(rand() & 0xFF);
+            out_len = new_len;
+        }
+        // POSTSERIALIZE_SECTION_OVERLAP not implemented yet
+    }
+
+    // 5. clean up and give bytes to AFL
+    state_free(&mutator->state);
+
+    if(out_len > max_size) out_len = max_size;
+    *out_buf = mutator->out_buf;
+    return out_len;
 }
