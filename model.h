@@ -552,7 +552,7 @@ typedef struct {
  * postserialize_op == POSTSERIALIZE_NONE means no post-serialize mutation requested.
  */
 typedef enum {
-    POSTSERIALIZE_NONE = -1,
+    POSTSERIALIZE_NONE = 0,        // deserialize_lnk memset default
     POSTSERIALIZE_TRUNCATE,        // cut off final N bytes. N stored in postserialize_arg
     POSTSERIALIZE_APPEND_GARBAGE,  // append N random bytes. N stored in postserialize_arg
     POSTSERIALIZE_SECTION_OVERLAP, // shrink a section size field so the next section overlaps
