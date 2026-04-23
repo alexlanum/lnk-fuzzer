@@ -85,8 +85,9 @@ class CoverageClient{...};
 
 
 ### Jackalope TinyInst
-
 TinyInst is a dynamic binary instrumentation (DBI) framework library for Windows, macOS, and Linux, written by Ivan Fratric (owner of Jackalope and WinAFL). https://github.com/googleprojectzero/TinyInst
+
+Jackalope uses TinyInst as its default instrumentation backend. Specifically, Jackalope's default coverage instrumentation is LiteCov, which is built on top of TinyInst. So when you run Jackalope out of the box without specifying an alternative, you're getting TinyInst-based dynamic binary instrumentation for both coverage feedback and (optionally) persistent-mode harnessing.
 
 Dynamic binary instrumentation means:
 
