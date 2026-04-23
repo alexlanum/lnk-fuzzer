@@ -156,7 +156,7 @@ LNKLayout mutate_extract_layout(LNKGeneratorState* state);
 /**
  * Initialize scheduler (call once @ startup)
  */
-void mutate_scheduler_init(void);
+void mutate_scheduler_init(uint64_t seed);
 
 /**
  * Choose a mutation operator, apply it, ret which was used

@@ -2636,18 +2636,9 @@ static void op_apply(MutationOperator op, LNKGeneratorState* state, LNKLayout* l
     }
 }
 
-// called once at startup. seeds PRNG + Thompson Sampling priors.
-void mutate_scheduler_init(void){
-    // seed priority:
-    //   1. AFL_CUSTOM_MUTATOR_SEED env var (explicit replay)
-    //   2. time() XOR (pid << 32), parallel workers diverge
-    uint64_t seed;
-    const char* env = getenv("AFL_CUSTOM_MUTATOR_SEED");
-    if(env){
-        seed = strtoull(env, NULL, 0);
-    } else{
-        seed = (uint64_t)time(NULL) ^ ((uint64_t)getpid() << 32);
-    }
+// called once per LnkMutator (i.e., once per worker thread).
+// seed comes from the caller — LnkMutator's ctor decides policy.
+void mutate_scheduler_init(uint64_t seed){
     mutate_rand_seed(seed);
 
     // Beta(1, 1) = uniform prior. no belief about any arm's rate yet.
