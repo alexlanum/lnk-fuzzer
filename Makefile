@@ -10,10 +10,6 @@ LDFLAGS = -fsanitize=address,undefined
 lnk_test: test.c gen.c serialize.c deserialize.c mutate.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-# AFL++ custom mutator shared library
-mutator.so: mutator.c gen.c serialize.c deserialize.c mutate.c
-	$(CC) $(CFLAGS) -shared -fPIC -o $@ $^ $(LDFLAGS)
-
 # # Target harness
 # harness: harness.c
 # 	afl-clang-fast $(CFLAGS) -o $@ $^ $(LDFLAGS)
@@ -22,6 +18,6 @@ test: lnk_test
 	./lnk_test
 
 clean:
-	rm -f lnk_test mutator.so harness
+	rm -f lnk_test harness
 
 .PHONY: test clean

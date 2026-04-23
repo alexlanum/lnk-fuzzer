@@ -8,7 +8,6 @@
 #include <string.h>
 #include <time.h>
 #include <math.h>
-#include <unistd.h>
 #include "clsids.h"
 
 // PRNG: splitmix64 seeder -> xoroshiro128++ generator
@@ -1032,8 +1031,7 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
             //
             // some delegate items also contain extension blocks (0xbeef0004, 0xbeef0013, etc.)
             // after the delegate CLSID. these are parsed by the delegate's own COM handler,
-            // not by RegFolder. corrupting them is handled by apply_extra mutation operators
-            // and AFL++ havoc on the serialized output. no dedicated fifth case needed here.
+            // not by RegFolder.
             if(pidl->item_count < 1) break;
             int idx = mutate_rand() % pidl->item_count;
             ItemID* item = &pidl->items[idx];
@@ -2557,7 +2555,7 @@ static void apply_specialfolder(MutationOperator op, LNKGeneratorState* state){
 // request on the state (postserialize_op + postserialize_arg). After
 // serialize() produces the LNK file byte buffer, the harness reads that
 // request and applies the actual byte-level mutation (truncate, append, overlap)
-// before submitting to AFL++.
+// before returning to the fuzzer.
 static void apply_file(MutationOperator op, LNKGeneratorState* state){
     switch(op){
         case MUTATE_FILE_TRUNCATE:{
@@ -2652,8 +2650,8 @@ void mutate_scheduler_init(uint64_t seed){
     }
 }
 
-// called by the AFL++ harness after running a mutated input.
-// new_cov = 1 if AFL++'s coverage bitmap saw a new edge, 0 otherwise.
+// called by LNKMutator::NotifyResult after Jackalope reports whether the last
+// iteration produced new coverage
 void mutate_report(MutationOperator op, int new_cov){
     if(op < 0 || op >= MUTATE_COUNT) return;
     MutationOperatorGroup g = op_to_group[op];

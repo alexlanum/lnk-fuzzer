@@ -547,7 +547,7 @@ typedef struct {
  * but GROUP_FILE operates on raw bytes and so it must be applied after serialize() produces the
  * byte buffer (.lnk file). The mutation operator dispatcher (op_apply()) sets these fields; the
  * harness reads them after serialization and applies the corresponding byute-level mutation before
- * submitting the mutated byte buffer to AFL++.
+ * returning the mutated byte buffer to the fuzzer.
  *
  * postserialize_op == POSTSERIALIZE_NONE means no post-serialize mutation requested.
  */
