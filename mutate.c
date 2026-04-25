@@ -2,81 +2,13 @@
 // Scheduler functions
 // Mutation operators
 #include "mutate.h"
+#include "lnk_prng.h"
 #include "model.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <math.h>
 #include "clsids.h"
-
-// PRNG: splitmix64 seeder -> xoroshiro128++ generator
-// reasons in notes/PRNG.md
-static uint64_t smstate;   // splitmix64 state, used only for seeding
-static uint64_t xstate[2]; // xoroshiro128++ state, used for all output
-
-// splitmix64: a bijective mixing function.
-// this seeder expands the 64-bit seed into the 128-bit xoroshiro state
-// https://prng.di.unimi.it/splitmix64.c
-static uint64_t splitmix64_next(void){
-	uint64_t z = (smstate += 0x9e3779b97f4a7c15);
-	z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9;
-	z = (z ^ (z >> 27)) * 0x94d049bb133111eb;
-	return z ^ (z >> 31);
-}
-
-static inline uint64_t rotl64(uint64_t x, int k){
-    k &= 63;                // mask k to 0-63
-    if(k == 0) return x;    // avoid UB on x >> 64 when k = 0
-    return (x << k)         // upper portion of result
-         | (x >> (64 - k)); // lower portion (bits that wrapped around)
-}
-
-// xoroshiro128++ 1.0 https://prng.di.unimi.it/xoroshiro128plusplus.c
-static uint64_t xoroshiro128pp(void){
-    const uint64_t s0 = xstate[0];
-    uint64_t s1 = xstate[1];
-    const uint64_t result = rotl64(s0 + s1, 17) + s0;
-    s1 ^= s0;
-    xstate[0] = rotl64(s0, 49) ^ s1 ^ (s1 << 21);
-    xstate[1] = rotl64(s1, 28);
-    return result;
-}
-
-// seed from a 64-bit input value. Loop guard against the 2^-128 case where splitmix produces zero for both state vars
-static void mutate_rand_seed(uint64_t seed){
-    smstate = seed;
-    do{
-        xstate[0] = splitmix64_next();
-        xstate[1] = splitmix64_next();
-    } while (xstate[0] == 0 && xstate[1] == 0);
-}
-
-static inline uint64_t mutate_rand_uniform64(void){
-    return xoroshiro128pp();
-}
-
-static uint32_t mutate_rand(void){
-    return (uint32_t)(xoroshiro128pp() >> 32);
-}
-
-// uniform in [0, n]. For the N values, modulo bias is max n / 2^64, realistically undetectable
-static inline uint32_t mutate_rand_below(uint32_t n){
-    if(n == 0) return 0;
-    return (uint32_t)(mutate_rand_uniform64() % n);
-}
-
-// uniform double in [0, 1] with full 53-bit mantissa precision.
-// can return exactly 0 (probability 2^-53). callers that take log()
-// of the result must guard against that, as shown in sample_gamma.
-static double mutate_rand_double(void){
-    return (double)(xoroshiro128pp() >> 11) * (1.0 / (double)(1ULL << 53));
-}
-
-// biased coin flip. returns 1 with probability p, else 0.
-static inline int mutate_rand_bool(double p){
-    return mutate_rand_double() < p;
-}
 
 /**
  * Scheduler state — Thompson Sampling
@@ -194,12 +126,12 @@ static MutationOperatorGroup op_to_group[MUTATE_COUNT] = {
 };
 
 // convert uniform random numbers into Gamma-distributed ones (produce Gamma samples)
-static double sample_gamma(double shape){
+static double sample_gamma(LNKRand* rng, double shape){
     if(shape < 1.0){
         // unlikely that this will trigger
         // Gamma(shape) = Gamma(shape + 1) * U^(1 / shape)
-        double u = mutate_rand_double();
-        return sample_gamma(shape + 1.0) * pow(u, 1.0 / shape);
+        double u = lnk_rand_double(rng);
+        return sample_gamma(rng, shape + 1.0) * pow(u, 1.0 / shape);
     }
 
     // Marsaglia and Tsang method for shape >= 1
@@ -210,16 +142,16 @@ static double sample_gamma(double shape){
         do{
             double u1, u2;
             do{
-                u1 = mutate_rand_double();
+                u1 = lnk_rand_double(rng);
             } while (u1 == 0.0);
-            u2 = mutate_rand_double();
+            u2 = lnk_rand_double(rng);
             x = sqrt(-2.0 * log(u1)) * cos(2.0 * 3.14159265358979 * u2);
             v = 1.0 + c * x;
         } while (v <= 0.0);
         
         v = v * v * v;
         
-        double u = mutate_rand_double();
+        double u = lnk_rand_double(rng);
         if(u < 1.0 - 0.0331 * (x * x) * (x*x))
             return d * v;
         if(log(u) < 0.5*x*x + d * (1.0 - v + log(v)))
@@ -228,9 +160,9 @@ static double sample_gamma(double shape){
 }
 
 // produce Beta samples (Beta = Gamma/Gamma)
-static double sample_beta(double a, double b){
-    double x = sample_gamma(a); // x = Gamma(alpha)
-    double y = sample_gamma(b); // y = Gamma(beta)
+static double sample_beta(LNKRand* rng, double a, double b){
+    double x = sample_gamma(rng, a); // x = Gamma(alpha)
+    double y = sample_gamma(rng, b); // y = Gamma(beta)
     return x / (x + y); // Beta = x / (x + y)
 }
 
@@ -436,7 +368,7 @@ static void remove_extra_block(ExtraDataState* extra, ExtraDataType type){
 }
 
 // GROUP_STRUCTURE
-static void apply_structure(MutationOperator op, LNKGeneratorState* state){
+static void apply_structure(LNKRand* rng, MutationOperator op, LNKGeneratorState* state){
     uint32_t flags[] = {
         0x00000001, // HasLinkTargetIDList
         0x00000002, // HasLinkInfo
@@ -453,7 +385,7 @@ static void apply_structure(MutationOperator op, LNKGeneratorState* state){
         case MUTATE_STRUCTURE_ADD:{
             // enable a section flag for a section that does not exist
             // parser expects data that is not there
-            state->header.link_flags |= flags[mutate_rand() % 9];
+            state->header.link_flags |= flags[lnk_rand(rng) % 9];
             break;
         }
 
@@ -461,13 +393,13 @@ static void apply_structure(MutationOperator op, LNKGeneratorState* state){
             // disable a section flag for a section that does not exist
             // parser skips the section but the bytes are still in the file
             // subsequent sections will be read from the wrong offset
-            state->header.link_flags &= ~flags[mutate_rand() % 9];
+            state->header.link_flags &= ~flags[lnk_rand(rng) % 9];
             break;
         }
 
         case MUTATE_STRUCTURE_DESYNC_FLAG:{
             // set contradictory or orphan flags simultaneously
-            int r = mutate_rand() % 100;
+            int r = lnk_rand(rng) % 100;
             if(r < 40){
                 // HasLinkInfo + ForceNoLinkInfo
                 // parser reads and deserializes LinkInfo entirely, then frees it.
@@ -508,10 +440,10 @@ static void apply_structure(MutationOperator op, LNKGeneratorState* state){
 }
 
 // GROUP_FLAGS (LinkFlags) mutation operators
-static void apply_flags(MutationOperator op, LNKGeneratorState* state){
+static void apply_flags(LNKRand* rng, MutationOperator op, LNKGeneratorState* state){
     switch(op){
         case MUTATE_FLAG_SINGLE_BIT:{
-            int rndm_bit = mutate_rand() % 32; // pick a random bit 0-31 to toggle inside link_flags
+            int rndm_bit = lnk_rand(rng) % 32; // pick a random bit 0-31 to toggle inside link_flags
             state->header.link_flags ^= (1u << rndm_bit); // shift by that many bits and set it
             break;
         }
@@ -531,19 +463,19 @@ static void apply_flags(MutationOperator op, LNKGeneratorState* state){
 
         case MUTATE_FLAG_RESERVED_BITS:{
             // bits 27-31 are unused/reserved
-            int mode = mutate_rand() % 3;
+            int mode = lnk_rand(rng) % 3;
             if(mode == 0){
                 // force set a reserved bit
-                int rndm_bit = 27 + (mutate_rand() % 5);
+                int rndm_bit = 27 + (lnk_rand(rng) % 5);
                 state->header.link_flags |= (1u << rndm_bit);
             } else if(mode == 1){
                 // flip
-                int rndm_bit = 27 + (mutate_rand() % 5);
+                int rndm_bit = 27 + (lnk_rand(rng) % 5);
                 state->header.link_flags ^= (1u << rndm_bit);
             } else{
                 // overwrite all reserved bits
                 state->header.link_flags &= ~0xF8000000;
-                state->header.link_flags |= ((mutate_rand() & 0x1F) << 27); // shift results in any 5-bit pattern, maximum exploration
+                state->header.link_flags |= ((lnk_rand(rng) & 0x1F) << 27); // shift results in any 5-bit pattern, maximum exploration
             }
             break;
         }
@@ -560,7 +492,7 @@ static void apply_flags(MutationOperator op, LNKGeneratorState* state){
 }
 
 // GROUP_SIZES mutation operators, multiple fields targeted
-static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout* layout){
+static void apply_sizes(LNKRand* rng, MutationOperator op, LNKGeneratorState* state, LNKLayout* layout){
     uint32_t boundaries[] = {
         0, 1, 2, 3, 4, 0x0F, 0x10, 0x13, 0x14,
         0x1B, 0x1C, 0x23, 0x24, 0xFFFF, 0x10000,
@@ -592,7 +524,7 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
     if(layout->has_propstore_block)targets[tcount++]                                               = T_PROPSTORE_VAL;
 
     if(tcount == 0) return;
-    int t = targets[mutate_rand() % tcount]; // choose a random valid field to mutate
+    int t = targets[lnk_rand(rng) % tcount]; // choose a random valid field to mutate
 
     switch(op){
         case MUTATE_SIZE_ZERO:{
@@ -616,7 +548,7 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
                     break;
                 case T_EXTRA:
                     // BlockSize < header size
-                    state->extradata.blocks[mutate_rand() % state->extradata.block_count].size = 0;
+                    state->extradata.blocks[lnk_rand(rng) % state->extradata.block_count].size = 0;
                     break;
                 case T_PROPSTORE_STOR:
                     // storage_size = 0: terminates chunk walk early (while(chunkSize != 0))
@@ -644,29 +576,29 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
             switch(t){
                 case T_LINKINFO:
                     // LinkInfoSize not big enough to hold the size field (< 4)
-                    state->linkinfo.link_info_size = mutate_rand() % 4;
+                    state->linkinfo.link_info_size = lnk_rand(rng) % 4;
                     break;
                 case T_VOLUMEID:
                     // VolumeIDSize < 0x10: fails VolumeID check
-                    state->linkinfo.volume_id.volume_id_size = mutate_rand() % 0x10;
+                    state->linkinfo.volume_id.volume_id_size = lnk_rand(rng) % 0x10;
                     break;
                 case T_CNRL:
                     // CNRL size must be >= 0x14    
-                    state->linkinfo.common_network_relative_link.common_network_relative_link_size = mutate_rand() % 0x14;
+                    state->linkinfo.common_network_relative_link.common_network_relative_link_size = lnk_rand(rng) % 0x14;
                     break;
                 case T_EXTRA:
                     // BlockSize must be >= 8
-                    state->extradata.blocks[mutate_rand() % state->extradata.block_count].size = mutate_rand() % 8;
+                    state->extradata.blocks[lnk_rand(rng) % state->extradata.block_count].size = lnk_rand(rng) % 8;
                     break;
                 case T_IDLIST:
                     // minimum total_size is 2 (only terminator, two zero bytes): 0 and 1 both underflow
-                    state->linktargetidlist.total_size = mutate_rand() % 2;
+                    state->linktargetidlist.total_size = lnk_rand(rng) % 2;
                     break;
                 case T_PROPSTORE_STOR:
                     // storage_size < 24 (4 size + 4 version + 16 fmtid)
                     for(int i = 0; i < state->extradata.block_count; i++)
                         if(state->extradata.blocks[i].type == EXTRA_PROPERTY_STORE && state->extradata.blocks[i].data){
-                            uint32_t undersized = mutate_rand() % 24;
+                            uint32_t undersized = lnk_rand(rng) % 24;
                             memcpy(state->extradata.blocks[i].data, &undersized, 4);
                             break;
                         }
@@ -677,7 +609,7 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
                         if(state->extradata.blocks[i].type == EXTRA_PROPERTY_STORE && state->extradata.blocks[i].data){
                             uint32_t payload_len = state->extradata.blocks[i].size - 8;
                             if(payload_len > 28){ // enough room for storage header + value_size
-                                uint32_t undersized = 1 + (mutate_rand() % 8);
+                                uint32_t undersized = 1 + (lnk_rand(rng) % 8);
                                 memcpy(state->extradata.blocks[i].data + 24, &undersized, 4);
                             }
                             break;
@@ -691,7 +623,7 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
         }
 
         case MUTATE_SIZE_DESYNC:{
-            int delta = (mutate_rand() % 100) - 50;
+            int delta = (lnk_rand(rng) % 100) - 50;
             switch(t){
                 case T_LINKINFO:
                     // size mismatch causes reads past LinkInfo into StringData/ExtraData bytes
@@ -711,7 +643,7 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
                     break;
                 case T_EXTRA:
                     // wrong block size: next block header read from middle of current payload
-                    state->extradata.blocks[mutate_rand() % state->extradata.block_count].size += delta;
+                    state->extradata.blocks[lnk_rand(rng) % state->extradata.block_count].size += delta;
                     break;
                 default: break;
             }
@@ -719,7 +651,7 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
         }
 
         case MUTATE_SIZE_BOUNDARY:{
-            uint32_t val = boundaries[mutate_rand() % bcount];
+            uint32_t val = boundaries[lnk_rand(rng) % bcount];
             switch(t){
                 case T_IDLIST:
                     // mismatch between declared size and actual PIDL items in IDListContainerIsConsistent
@@ -739,7 +671,7 @@ static void apply_sizes(MutationOperator op, LNKGeneratorState* state, LNKLayout
                     break;
                 case T_EXTRA:
                     // > 0xFFFF seeks backwards, < 8 terminates block loop
-                    state->extradata.blocks[mutate_rand() % state->extradata.block_count].size = val;
+                    state->extradata.blocks[lnk_rand(rng) % state->extradata.block_count].size = val;
                     break;
                 default:
                     break;
@@ -782,17 +714,17 @@ static int check_delegate(uint8_t* raw, int raw_len){
 }
 
 // GROUP_PIDL (LinkTargetIDList) mutation operators
-static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
+static void apply_pidl(LNKRand* rng, MutationOperator op, LNKGeneratorState* state){
     // operators manipulate shell items in the items[] array
     LinkTargetIDList* pidl = &state->linktargetidlist;
     switch(op){
         case MUTATE_PIDL_REORDER_ITEM:{
             // swap two random items: parent/child relationship breaks
             if(pidl->item_count < 2) break;
-            int i = mutate_rand() % pidl->item_count;
+            int i = lnk_rand(rng) % pidl->item_count;
             int j;
             do{
-                j = mutate_rand() % pidl->item_count;
+                j = lnk_rand(rng) % pidl->item_count;
             } while(j == i);
             ItemID tmp = pidl->items[i];
             pidl->items[i] = pidl->items[j];
@@ -804,7 +736,7 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
             // extra node in namespace walk: handler gets unexpected child
             // example: [Desktop] -> [C: drive] -> [INSERTION] -> [Users folder] -> [file.txt]
             if(pidl->item_count >= MAX_PIDL_ITEMS) break;
-            int pos = mutate_rand() % (pidl->item_count + 1); // pick a random pos in the list, insert there
+            int pos = lnk_rand(rng) % (pidl->item_count + 1); // pick a random pos in the list, insert there
             
             // shift existing items right to make a gap for the insertion at the pos we want
             for(int i = pidl->item_count; i > pos; i--)
@@ -814,7 +746,7 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
             ItemID* item = &pidl->items[pos];
             memset(item, 0, sizeof(ItemID));
             item->size = 4;                   // cb = 4 (smallest valid: 2 cb + 1 class type + 1 byte)
-            item->class_type = mutate_rand() & 0xFF; // rndm class type
+            item->class_type = lnk_rand(rng) & 0xFF; // rndm class type
             item->type = IDTYPE_UNKNOWN;
             item->payload_len = 1;            // 1 byte of payload after class type
             item->payload = malloc(1);
@@ -824,7 +756,7 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
             uint16_t cb = 4;
             memcpy(item->raw, &cb, 2);        // bytes 0-1 is cb
             item->raw[2] = item->class_type;  // byte 2 is abID[0] (class type)
-            item->raw[3] = mutate_rand() & 0xFF;     // byte 3 is payload, random here, doesn't rly matter can be 0 or wateva
+            item->raw[3] = lnk_rand(rng) & 0xFF;     // byte 3 is payload, random here, doesn't rly matter can be 0 or wateva
             pidl->item_count++;               // +1 item in the list
             break;
         }
@@ -832,7 +764,7 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
         case MUTATE_PIDL_REMOVE_ITEM:{
             // remove a random item in the list, namespace walk is shorter, children lose their parent
             if(pidl->item_count <= 1) break;
-            int idx = mutate_rand() % pidl->item_count;
+            int idx = lnk_rand(rng) % pidl->item_count;
             free(pidl->items[idx].raw);
             free(pidl->items[idx].payload);
             // shift everything after the removed item to the left to fill the gap so the array is contiguous again
@@ -849,7 +781,7 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
             // The duplicate is inserted at the end of the list rather than at a random
             // position because random insertion would just test parent/child confusion
             if(pidl->item_count < 1 || pidl->item_count >= MAX_PIDL_ITEMS) break;
-            int idx = mutate_rand() % pidl->item_count;
+            int idx = lnk_rand(rng) % pidl->item_count;
             ItemID* src = &pidl->items[idx];
             ItemID* dst = &pidl->items[pidl->item_count]; // end
             *dst = *src; // get the struct fields
@@ -868,7 +800,7 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
             if(pidl->item_count < 2) break;
             
             // choose a child item (skip idx 0 to keep root valid so we reach namespace dispatch)
-            int i = 1 + (mutate_rand() % (pidl->item_count - 1)); // 0 to item_count - 2, skips idx 0 (root item) to keep root valid
+            int i = 1 + (lnk_rand(rng) % (pidl->item_count - 1)); // 0 to item_count - 2, skips idx 0 (root item) to keep root valid
 
             // set to a class type that conflicts with parent namespace
             uint8_t types[] = { // https://www.geoffchappell.com/studies/windows/shell/shell32/classes/regfolder.htm
@@ -886,7 +818,7 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
             uint8_t parent_type = pidl->items[i - 1].class_type; // i - 1 is the parent
             uint8_t new_type;
             do{
-                new_type = types[mutate_rand() % (sizeof(types) / sizeof(types[0]))];
+                new_type = types[lnk_rand(rng) % (sizeof(types) / sizeof(types[0]))];
             } while(new_type == parent_type); // ensure they are different
 
             pidl->items[i].class_type = new_type;
@@ -901,12 +833,12 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
             //  abID[0] = 0x1F (CLSID shell item)
             //  Payload = TRUNCATED GUID
             if(pidl->item_count < 1) break;
-            int idx = mutate_rand() % pidl->item_count;
+            int idx = lnk_rand(rng) % pidl->item_count;
             ItemID* item = &pidl->items[idx];
             if(item->payload_len <= 1) break; // ned at least 2 bytes of payload to have a range of possible truncation lengths
             
             // pick a new shorter payload_len
-            uint16_t new_len = mutate_rand() % item->payload_len;
+            uint16_t new_len = lnk_rand(rng) % item->payload_len;
             item->payload_len = new_len; // truncate
 
             // rebuild raw buffer to match
@@ -924,20 +856,20 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
         
         case MUTATE_PIDL_TOTAL_SIZE_DESYNC:{
             // make IDListSize field inconsistent with items
-            int r = mutate_rand() % 100;
+            int r = lnk_rand(rng) % 100;
             if(r < 40){
                 // off-by-one: most likely to slip past validation
-                pidl->total_size += (mutate_rand() % 2 == 0) ? 1 : -1;
+                pidl->total_size += (lnk_rand(rng) % 2 == 0) ? 1 : -1;
             }else if(r < 70){
                 // small drift: +/- 8 bytes
-                pidl->total_size += (mutate_rand() % 16) - 8;
+                pidl->total_size += (lnk_rand(rng) % 16) - 8;
             }else if(r < 80){
                 // large positive: big overallocation
-                pidl->total_size += 500 + (mutate_rand() % 1000);
+                pidl->total_size += 500 + (lnk_rand(rng) % 1000);
             }else if(r < 90){
                 // boundary values
                 uint16_t vals[] = {0, 1, 2, 0x7FFF, 0xFFFF};
-                pidl->total_size = vals[mutate_rand() % 5];
+                pidl->total_size = vals[lnk_rand(rng) % 5];
             }else{
                 // zero: allocation skipped or fails
                 pidl->total_size = 0;
@@ -947,12 +879,12 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
         
         case MUTATE_PIDL_CLASS_TYPE:{
             if(pidl->item_count < 1) break;
-            int idx = mutate_rand() % pidl->item_count;
+            int idx = lnk_rand(rng) % pidl->item_count;
             ItemID* item = &pidl->items[idx];
             // 70% random byte to test undocumented handlers
             // 30% documented type to test known handlers with wrong payload
-            if(mutate_rand() % 100 < 70)
-                item->class_type = mutate_rand() & 0xFF;
+            if(lnk_rand(rng) % 100 < 70)
+                item->class_type = lnk_rand(rng) & 0xFF;
             else{
                 uint8_t types[] = { // https://www.geoffchappell.com/studies/windows/shell/shell32/classes/regfolder.htm
                     0x1F,                                     // root folder / CLSID
@@ -966,7 +898,7 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
                     0x73,                                     // CommonPlacesFolder
                     0x74,                                     // UsersFilesFolder
                 };
-                item->class_type = types[mutate_rand() % (sizeof(types) / sizeof(types[0]))];
+                item->class_type = types[lnk_rand(rng) % (sizeof(types) / sizeof(types[0]))];
             }
             if(item->raw_len >= 3)
                 item->raw[2] = item->class_type;
@@ -985,9 +917,9 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
             item->type = IDTYPE_CLSID_ITEM;
             item->payload_len = 17;               // sort order (1), GUID (16)
             item->payload = malloc(17);
-            item->payload[0] = mutate_rand() & 0xFF;     // random sort order
+            item->payload[0] = lnk_rand(rng) & 0xFF;     // random sort order
             for(int i = 0; i < 16; i++)
-                item->payload[1 + i] = mutate_rand() & 0xFF; // random GUID
+                item->payload[1 + i] = lnk_rand(rng) & 0xFF; // random GUID
             item->raw_len = 20;
             item->raw = malloc(20);
             uint16_t cb = 20;
@@ -1008,11 +940,11 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
             // a non-zero terminal could make the parser think another item exists to read and therefore read past the real end of IDList
             // ex. walker reads [83 23] (cb = 9091) and jumps forward 9091 bytes – hits another section or somewhere unexpected
             pidl->has_terminal = 1;
-            int r = mutate_rand() % 100;
+            int r = lnk_rand(rng) % 100;
             if(r < 50)
-                pidl->terminal_value = 1 + (mutate_rand() % 10); // small
+                pidl->terminal_value = 1 + (lnk_rand(rng) % 10); // small
             else if(r < 80)
-                pidl->terminal_value = mutate_rand() & 0xFFFF;   // random uint16_t
+                pidl->terminal_value = lnk_rand(rng) & 0xFFFF;   // random uint16_t
             else
                 pidl->terminal_value = 0xFFFF;            // cb max
             break;
@@ -1033,12 +965,12 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
             // after the delegate CLSID. these are parsed by the delegate's own COM handler,
             // not by RegFolder.
             if(pidl->item_count < 1) break;
-            int idx = mutate_rand() % pidl->item_count;
+            int idx = lnk_rand(rng) % pidl->item_count;
             ItemID* item = &pidl->items[idx];
 
             int marker_offset = check_delegate(item->raw, item->raw_len);
             if(marker_offset >= 0){ // is DELEGATEITEMID
-                int mode = mutate_rand() % 4;
+                int mode = lnk_rand(rng) % 4;
                 switch(mode){
                     case 0:{
                         // TARGET: DELEGATEITEMID outer data size field @0x04
@@ -1048,11 +980,11 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
                         // RegFolder will read 16 bytes from the wrong location
                         // and compare them against the marker.
                         uint16_t val;
-                        int r = mutate_rand() % 100;
+                        int r = lnk_rand(rng) % 100;
                         if(r < 40){
-                            val = mutate_rand() % 10;     // small, read position is still inside the item buffer
+                            val = lnk_rand(rng) % 10;     // small, read position is still inside the item buffer
                         } else if(r < 70){
-                            val = mutate_rand() & 0xFFFF; // land anywhere, unpredictable misalignment
+                            val = lnk_rand(rng) & 0xFFFF; // land anywhere, unpredictable misalignment
                         } else if(r < 85){
                             val = 0;               // skip outer data, read from offset 6
                         } else{
@@ -1069,8 +1001,8 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
                         // ex. comparison fails because byte 4 is now 0xA9 not 0x96
                         // RegFolder concludes "not a delegate," and processes the
                         // delegate item using standard format.
-                        int byte_offset = marker_offset + (mutate_rand() % 16);
-                        item->raw[byte_offset] ^= (1 + (mutate_rand() % 255)); // change a random byte in marker
+                        int byte_offset = marker_offset + (lnk_rand(rng) % 16);
+                        item->raw[byte_offset] ^= (1 + (lnk_rand(rng) % 255)); // change a random byte in marker
                         break;
                     }
 
@@ -1081,7 +1013,7 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
                         // value means the item doesn't match any known parent.
                         // RegFolder may reject, dispatch to another handler, or
                         // process it with wrong assumptions about its outer data.
-                        uint16_t val = mutate_rand() & 0xFFFF;
+                        uint16_t val = lnk_rand(rng) & 0xFFFF;
                         memcpy(item->raw + 2, &val, 2); // corrupt 0x02, 0x03
                         break;
                     }
@@ -1094,15 +1026,15 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
                         int clsid_offset = marker_offset + 16;
                         if(clsid_offset + 16 > item->raw_len) break;
                         
-                        int r = mutate_rand() % 100;
+                        int r = lnk_rand(rng) % 100;
                         if(r < 30){
                             // 30% rndm: test error handling when CLSID doesn't exist
                             for(int i = 0; i < 16; i++)
-                                item->raw[clsid_offset + i] = mutate_rand() & 0xFF;
+                                item->raw[clsid_offset + i] = lnk_rand(rng) & 0xFF;
                         } else{
                             // 70% known IShellFolder: test real handlers receiving
                             // DELEGATEITEMID outer data they weren't designed to parse
-                            int ci = mutate_rand() % KNOWN_SHELL_CLSIDS_COUNT;
+                            int ci = lnk_rand(rng) % KNOWN_SHELL_CLSIDS_COUNT;
                             memcpy(item->raw + clsid_offset, KNOWN_SHELL_CLSIDS[ci], 16);
                         }
                         break;
@@ -1129,17 +1061,17 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
             // ensures each item is valid enough to reach the BindToObject recursion
             if(pidl->item_count < 1 || pidl->item_count >= MAX_PIDL_ITEMS) break;
 
-            int src = mutate_rand() % pidl->item_count;
+            int src = lnk_rand(rng) % pidl->item_count;
             ItemID* dupe = &pidl->items[src];
 
             // fill remaining PIDL with copies
             int capacity = (MAX_PIDL_ITEMS - pidl->item_count);
             // but randomize how many, sometimes moderate depth, sometimes extreme
-            int r = mutate_rand() % 100;
+            int r = lnk_rand(rng) % 100;
             if(r < 50){
-                capacity = 10 + (mutate_rand() % 20); // moderate: 10-29 items
+                capacity = 10 + (lnk_rand(rng) % 20); // moderate: 10-29 items
             } else if(r < 80){
-                capacity = 30 + (mutate_rand() % 30); // deep: 30-59 items
+                capacity = 30 + (lnk_rand(rng) % 30); // deep: 30-59 items
             } else{
                 capacity = capacity;           // max: fill up with items
             }
@@ -1175,7 +1107,7 @@ static void apply_pidl(MutationOperator op, LNKGeneratorState* state){
 }
 
 // GROUP_OFFSETS
-static void apply_offsets(MutationOperator op, LNKGeneratorState* state){
+static void apply_offsets(LNKRand* rng, MutationOperator op, LNKGeneratorState* state){
     // LinkInfo:
     //   [0] volume_id_offset
     //   [1] local_base_path_offset
@@ -1253,7 +1185,7 @@ static void apply_offsets(MutationOperator op, LNKGeneratorState* state){
 
     if(field_count == 0) return;
 
-    int idx = mutate_rand() % field_count;
+    int idx = lnk_rand(rng) % field_count;
     uint32_t* target = offset_fields[idx];
 
     switch(op){
@@ -1267,7 +1199,7 @@ static void apply_offsets(MutationOperator op, LNKGeneratorState* state){
         case MUTATE_OFFSET_PAST_EOF:{
             // offset exceeds the containing structure's declared size:
             // parser dereferences data out of bounds, ex. adjacent sections, unmapped memory
-            int r = mutate_rand() % 100;
+            int r = lnk_rand(rng) % 100;
             if(r < 30) // 30%
                 // max uint32 value. if the parser does pBase + offset, this wraps the pointer
                 // around on 32-bit or produces a huge value on 64-bit.
@@ -1288,13 +1220,13 @@ static void apply_offsets(MutationOperator op, LNKGeneratorState* state){
                 // typical LinkInfo section is ~300 bytes, this is 100x-1000x that.
                 // observes:
                 //  . behavior that emerges when the parser reads bytes from completely different memory
-                *target = 0x10000 + (mutate_rand() % 0x10000);
+                *target = 0x10000 + (lnk_rand(rng) % 0x10000);
             else // 25%
                 // take the current (valid) offset and add 0x400 (1KB) to 0xFC00 (65KB) to it.
                 // the offset now points past the end of the section.
                 // observes:
                 //  . if the parser compares offset against section size before dereferencing
-                *target = *target + 0x400 + (mutate_rand() % 0xFC00); // cur + large fwd jump
+                *target = *target + 0x400 + (lnk_rand(rng) % 0xFC00); // cur + large fwd jump
             break;
         }
 
@@ -1306,7 +1238,7 @@ static void apply_offsets(MutationOperator op, LNKGeneratorState* state){
             if(field_count < 2) break;
             int idx2;
             do{
-                idx2 = mutate_rand() % field_count;
+                idx2 = lnk_rand(rng) % field_count;
             } while(offset_fields[idx2] == target); // make sure not the same field
             *target = *offset_fields[idx2];
             break;
@@ -1319,7 +1251,7 @@ static void apply_offsets(MutationOperator op, LNKGeneratorState* state){
             // CNRL header occupies 0x00–0x13. For PIDL indices, small values address
             // the first items in the IDList or fall below item_count entirely.
             uint32_t header_positions[] = {0, 1, 2, 4, 8, 0x0C, 0x10, 0x14, 0x18};
-            *target = header_positions[mutate_rand() % (sizeof(header_positions) / sizeof(header_positions[0]))];
+            *target = header_positions[lnk_rand(rng) % (sizeof(header_positions) / sizeof(header_positions[0]))];
             break;
         }
 
@@ -1341,7 +1273,7 @@ static void apply_offsets(MutationOperator op, LNKGeneratorState* state){
             //   0x08: net_name_offset
             //   0x0C: device_name_offset
             uint32_t chain_positions[] = {0x08, 0x0C, 0x10, 0x14, 0x18, 0x1C, 0x20};
-            *target = chain_positions[mutate_rand() % (sizeof(chain_positions) / sizeof(chain_positions[0]))];
+            *target = chain_positions[lnk_rand(rng) % (sizeof(chain_positions) / sizeof(chain_positions[0]))];
             break;
         }
 
@@ -1350,7 +1282,7 @@ static void apply_offsets(MutationOperator op, LNKGeneratorState* state){
 }
 
 // GROUP_EXTRA_SEQ ExtraData block ordering/presence
-static void apply_extra_seq(MutationOperator op, LNKGeneratorState* state){
+static void apply_extra_seq(LNKRand* rng, MutationOperator op, LNKGeneratorState* state){
     // ExtraData is a list of blocks parsed by SHReadDataBlockList.
     //  . BlockSize > 0xFFFF: seek backward in stream, silently terminate loop
     //  . BlockSize < 8: terminate loop
@@ -1363,10 +1295,10 @@ static void apply_extra_seq(MutationOperator op, LNKGeneratorState* state){
             // swap two blocks, test if any code assumes specific ordering
             // ex. TrackerDataBlock before PropertyStoreDataBlock
             if(extra->block_count < 2) break;
-            int a = mutate_rand() % extra->block_count;
+            int a = lnk_rand(rng) % extra->block_count;
             int b;
             do{
-                b = mutate_rand() % extra->block_count;
+                b = lnk_rand(rng) % extra->block_count;
             } while(b == a); // make sure a and b not the same block
             ExtraDataBlock tmp = extra->blocks[a];
             extra->blocks[a] = extra->blocks[b];
@@ -1379,7 +1311,7 @@ static void apply_extra_seq(MutationOperator op, LNKGeneratorState* state){
             // that SHFindDataBlock returns NULL for. removing SpecialFolderDataBlock
             // or KnownFolderDataBlock changes namespace resolution context
             if(extra->block_count < 1) break;
-            int idx = mutate_rand() % extra->block_count;
+            int idx = lnk_rand(rng) % extra->block_count;
             free(extra->blocks[idx].data);
             for(int i = idx; i < extra->block_count - 1; i++)
                 extra->blocks[i] = extra->blocks[i + 1]; // shift every block after the removed one left by one position to fill the gap
@@ -1392,7 +1324,7 @@ static void apply_extra_seq(MutationOperator op, LNKGeneratorState* state){
             // SHFindDataBlock will return the first match
             // tests if any code assumes uniqueness or processes both
             if(extra->block_count < 1 || extra->block_count >= MAX_EXTRA_DATA_BLOCKS) break;
-            int src = mutate_rand() % extra->block_count;
+            int src = lnk_rand(rng) % extra->block_count;
             ExtraDataBlock* s = &extra->blocks[src]; // random block
             ExtraDataBlock* d = &extra->blocks[extra->block_count]; // end
             d->size = s->size;
@@ -1425,14 +1357,14 @@ static void apply_extra_seq(MutationOperator op, LNKGeneratorState* state){
                 EXTRA_ICON_ENVIRONMENT, EXTRA_PROPERTY_STORE,
                 EXTRA_KNOWN_FOLDER, EXTRA_VISTA_IDLIST, EXTRA_SHIM,
             };
-            block->type = types[mutate_rand() % 11];
+            block->type = types[lnk_rand(rng) % 11];
 
-            int data_len = 8 + (mutate_rand() % 32); // 8 + 0-31 = 8-39 payload size after the header
+            int data_len = 8 + (lnk_rand(rng) % 32); // 8 + 0-31 = 8-39 payload size after the header
             // 8 minimum ensures enough bytes for handlers to start parsing
             // 39 maximum keeps it small enough to pass SHReadDataBlockList validation (< 0xFFFF)
             block->data = calloc(1, data_len);
             for(int i = 0; i < data_len; i++)
-                block->data[i] = mutate_rand() & 0xFF; // fill payload w random stuff
+                block->data[i] = lnk_rand(rng) & 0xFF; // fill payload w random stuff
             block->size = 8 + data_len; // header + payload
             extra->block_count++;
             break;
@@ -1449,12 +1381,12 @@ static void apply_extra_seq(MutationOperator op, LNKGeneratorState* state){
             // inject a block with size < 8 before the real blocks
             // SHReadDataBlockList terminates loop early
             if(extra->block_count < 1 || extra->block_count >= MAX_EXTRA_DATA_BLOCKS) break;
-            int pos = mutate_rand() % extra->block_count; // insert before this block
+            int pos = lnk_rand(rng) % extra->block_count; // insert before this block
             for(int i = extra->block_count; i > pos; i--)
                 extra->blocks[i] = extra->blocks[i - 1];
             ExtraDataBlock* b = &extra->blocks[pos];
             memset(b, 0, sizeof(ExtraDataBlock));
-            b->size = mutate_rand() % 8; // 0-7 size triggers loop termination
+            b->size = lnk_rand(rng) % 8; // 0-7 size triggers loop termination
             b->type = EXTRA_TERMINATOR;
             b->data = NULL;
             extra->block_count++;
@@ -1466,7 +1398,7 @@ static void apply_extra_seq(MutationOperator op, LNKGeneratorState* state){
 }
 
 // GROUP_EXTRA_HDR ExtraData block header corruption
-static void apply_extra_hdr(MutationOperator op, LNKGeneratorState* state){
+static void apply_extra_hdr(LNKRand* rng, MutationOperator op, LNKGeneratorState* state){
     // MUTATE_BLOCK_SIZE_ZERO,
     // MUTATE_BLOCK_SIZE_UNDERFLOW,        // < 8, smaller than header
     // MUTATE_BLOCK_SIZE_OVERFLOW,         // extends into next block
@@ -1475,7 +1407,7 @@ static void apply_extra_hdr(MutationOperator op, LNKGeneratorState* state){
     ExtraDataState* extra = &state->extradata;
     if(extra->block_count < 1) return;
 
-    int idx = mutate_rand() % extra->block_count;
+    int idx = lnk_rand(rng) % extra->block_count;
     ExtraDataBlock* block = &extra->blocks[idx];
 
     switch(op){
@@ -1491,18 +1423,18 @@ static void apply_extra_hdr(MutationOperator op, LNKGeneratorState* state){
             // parser stops walking and ignores remaining blocks
             // values 1-7 test if the termination path handles partial
             // header reads (size field exists but signature doesn't fit)
-            block->size = 1 + (mutate_rand() % 7);
+            block->size = 1 + (lnk_rand(rng) % 7);
             break;
         }
 
         case MUTATE_BLOCK_SIZE_OVERFLOW:{
             // size > 0xFFFF causes SHReadDataBlockList to seek backward
             // in stream, silently terminates loop
-            int r = mutate_rand() % 100;
+            int r = lnk_rand(rng) % 100;
             if(r < 40)
                 block->size = 0x10000;                      // past 0xFFFF boundary
             else if(r < 70)
-                block->size = 0x10000 + (mutate_rand() % 0xF0000); // 64KB-1MB
+                block->size = 0x10000 + (lnk_rand(rng) % 0xF0000); // 64KB-1MB
             else if(r < 85)
                 block->size = 0xFFFFFFFF;                   // max uint32
             else
@@ -1514,11 +1446,11 @@ static void apply_extra_hdr(MutationOperator op, LNKGeneratorState* state){
             // unrecognized signature, IsValidDataBlock rejects the block
             // tests if rejection path correctly skips the abID[] payload bytes
             // or if the parser gets confused abt where the next block starts
-            int r = mutate_rand() % 100;
+            int r = lnk_rand(rng) % 100;
             if(r < 40)
                 block->type = EXTRA_TERMINATOR; // maps to unknown signature in serializer
             else if(r < 70)
-                block->type = mutate_rand() % 12;      // random type from the enum, might collide with real type
+                block->type = lnk_rand(rng) % 12;      // random type from the enum, might collide with real type
             else{
                 block->type = EXTRA_TERMINATOR; // unknown signature
                 block->size = 8;                // but valid size
@@ -1549,7 +1481,7 @@ static void apply_extra_hdr(MutationOperator op, LNKGeneratorState* state){
                 };
                 ExtraDataType new_type;
                 do{
-                    new_type = types[mutate_rand() % 11];
+                    new_type = types[lnk_rand(rng) % 11];
                 } while(new_type == block->type); // ensure different type
                 block->type = new_type;
             } else{
@@ -1558,7 +1490,7 @@ static void apply_extra_hdr(MutationOperator op, LNKGeneratorState* state){
                 // both handlers get each other's payloads.
                 int other;
                 do{
-                    other = mutate_rand() % extra->block_count;
+                    other = lnk_rand(rng) % extra->block_count;
                 } while(other == idx); // ensure different block index
                 ExtraDataType tmp = block->type;
                 block->type = extra->blocks[other].type;
@@ -1573,12 +1505,12 @@ static void apply_extra_hdr(MutationOperator op, LNKGeneratorState* state){
 }
 
 // Serialized Property Storage (property set within property store)
-static void apply_propstore_set(MutationOperator op, LNKGeneratorState* state){
+static void apply_propstore_set(LNKRand* rng, MutationOperator op, LNKGeneratorState* state){
     SerializedPropertyStore* ps = &state->propstore;
     if(ps->storage_count < 1) return;
 
     // pick random storage, mutate storage-level fields
-    int idx = mutate_rand() % ps->storage_count;
+    int idx = lnk_rand(rng) % ps->storage_count;
     SerializedPropertyStorage* storage = &ps->storages[idx];
 
     switch(op){
@@ -1592,7 +1524,7 @@ static void apply_propstore_set(MutationOperator op, LNKGeneratorState* state){
         case MUTATE_PROPSTORE_STORAGE_SIZE_UNDERFLOW:{
             // minimum valid storage is 24 bytes (StorageSize + Version + FormatID)
             // values < 24 mean the parser can't read the full header
-            storage->storage_size = 1 + (mutate_rand() % 23); // 1-23 (smaller than header)
+            storage->storage_size = 1 + (lnk_rand(rng) % 23); // 1-23 (smaller than header)
             break;
         }
 
@@ -1611,11 +1543,11 @@ static void apply_propstore_set(MutationOperator op, LNKGeneratorState* state){
             // the next storage's StorageSize. Those bytes could be anything. The loop keeps
             // walking with corrupted positions, accumulating a wrong computedSize, which
             // gets passed to CoTaskMemAlloc & memcpy.
-            int r = mutate_rand() % 100;
+            int r = lnk_rand(rng) % 100;
             if(r < 50)
-                storage->storage_size += (mutate_rand() % 16) - 8; // small drift +/- 8, lands nearby in the next storage's header
+                storage->storage_size += (lnk_rand(rng) % 16) - 8; // small drift +/- 8, lands nearby in the next storage's header
             else if(r < 80)
-                storage->storage_size = 24 + (mutate_rand() % 32); // assign a size that is >= 24 but is likely shorter than the actual storage content
+                storage->storage_size = 24 + (lnk_rand(rng) % 32); // assign a size that is >= 24 but is likely shorter than the actual storage content
             else
                 storage->storage_size = storage->storage_size / 2; // half the actual size
             break;
@@ -1625,7 +1557,7 @@ static void apply_propstore_set(MutationOperator op, LNKGeneratorState* state){
             // CMemPropStore::SetPropertyStorage rejects if computedSize > 0x08000000 (128MB)
             // one below the boundary passes the check, then CoTaskMemAlloc tries to alloc ~128MB
             // may fail and return NULL
-            int r = mutate_rand() % 100;
+            int r = lnk_rand(rng) % 100;
             if(r < 60)
                 storage->storage_size = 0x07FFFFFF; // 1 below boundary, passes check, massive alloc
             else
@@ -1636,15 +1568,15 @@ static void apply_propstore_set(MutationOperator op, LNKGeneratorState* state){
         case MUTATE_PROPSTORE_VERSION_WRONG:{
             // version must be 0x53505331 ("1SPS")
             // tests s_ValidateStorage rejection cleanup
-            int r = mutate_rand() % 100;
+            int r = lnk_rand(rng) % 100;
             if(r < 30)
                 storage->version = 0; // zero
             else if(r < 60)
                 storage->version = 0x53505332; // "2SPS" off by one
             else if(r < 80)
-                storage->version = mutate_rand(); // random
+                storage->version = lnk_rand(rng); // random
             else
-                storage->version = 0x53505331 ^ (1 << (mutate_rand() % 32)); // single bit flip
+                storage->version = 0x53505331 ^ (1 << (lnk_rand(rng) % 32)); // single bit flip
             break;
         }
 
@@ -1652,7 +1584,7 @@ static void apply_propstore_set(MutationOperator op, LNKGeneratorState* state){
             // unknown FormatID, no property schema registered for it
             // parser may fail to find handlers or fall through to default
             for(int i = 0; i < 16; i++)
-                storage->fmtid[i] = mutate_rand() & 0xFF;
+                storage->fmtid[i] = lnk_rand(rng) & 0xFF;
             break;
         }
 
@@ -1684,7 +1616,7 @@ static void apply_propstore_set(MutationOperator op, LNKGeneratorState* state){
             if(ps->storage_count < 2) break;
             int other;
             do{
-                other = mutate_rand() % ps->storage_count;
+                other = lnk_rand(rng) % ps->storage_count;
             } while(other == idx);
             memcpy(storage->fmtid, ps->storages[other].fmtid, 16);
             break;
@@ -1694,7 +1626,7 @@ static void apply_propstore_set(MutationOperator op, LNKGeneratorState* state){
             // set a middle storage's size to 0, terminates the walk early
             // storages after it are never processed
             if(ps->storage_count < 2) break;
-            int middle = mutate_rand() % (ps->storage_count - 1); // not the last one
+            int middle = lnk_rand(rng) % (ps->storage_count - 1); // not the last one
             ps->storages[middle].storage_size = 0;
             break;
         }
@@ -1713,14 +1645,14 @@ static void apply_propstore_set(MutationOperator op, LNKGeneratorState* state){
 }
 
 // Serialized Property Value
-static void apply_propstore_val(MutationOperator op, LNKGeneratorState* state){
+static void apply_propstore_val(LNKRand* rng, MutationOperator op, LNKGeneratorState* state){
     SerializedPropertyStore* ps = &state->propstore;
     if(ps->storage_count < 1) return;
 
     // pick random storage, pick randome value, mutate value-level fields
-    int idx = mutate_rand() % ps->storage_count;
+    int idx = lnk_rand(rng) % ps->storage_count;
     SerializedPropertyStorage* storage = &ps->storages[idx];
-    int val_idx = mutate_rand() % storage->value_count;
+    int val_idx = lnk_rand(rng) % storage->value_count;
     SerializedPropertyValue* val = &storage->values[val_idx];
     
     // MUTATE_PROPSTORE_DUPLICATE_PID,             // duplicate property ID in same storage
@@ -1749,9 +1681,9 @@ static void apply_propstore_val(MutationOperator op, LNKGeneratorState* state){
         case MUTATE_PROPSTORE_VALUE_SIZE_UNDERFLOW:{
             // ValueSize smaller than header (< 9)
             if(storage->name_scheme == PROPVAL_STRING_NAMED)
-                val->string_named.value_size = 1 + (mutate_rand() % 8); // 1-9 (not 0, other op handles that)
+                val->string_named.value_size = 1 + (lnk_rand(rng) % 8); // 1-9 (not 0, other op handles that)
             else
-                val->integer_named.value_size = 1 + (mutate_rand() % 8);
+                val->integer_named.value_size = 1 + (lnk_rand(rng) % 8);
             break;
         }
 
@@ -1759,19 +1691,19 @@ static void apply_propstore_val(MutationOperator op, LNKGeneratorState* state){
             // ValueSize is the skip distance to the next value entry in the storage
             // wrong value makes GetValue land mid-field and read garbage as the next
             // value's PropertyID/NameSize/TypedPropertyValue
-            int r = mutate_rand() % 100;
+            int r = lnk_rand(rng) % 100;
             if(r < 50){
                 // small drift, -8 to +7 range
                 if(val->name_scheme == PROPVAL_STRING_NAMED)
-                    val->string_named.value_size += (mutate_rand() % 16) - 8;
+                    val->string_named.value_size += (lnk_rand(rng) % 16) - 8;
                 else
-                    val->integer_named.value_size += (mutate_rand() % 16) - 8;
+                    val->integer_named.value_size += (lnk_rand(rng) % 16) - 8;
             } else if(r < 80){
                 // passes < 9 check but wrong
                 if(val->name_scheme == PROPVAL_STRING_NAMED)
-                    val->string_named.value_size = 9 + (mutate_rand() % 32);
+                    val->string_named.value_size = 9 + (lnk_rand(rng) % 32);
                 else
-                    val->integer_named.value_size = 9 + (mutate_rand() % 32);
+                    val->integer_named.value_size = 9 + (lnk_rand(rng) % 32);
             } else{
                 // half actual size
                 if(val->name_scheme == PROPVAL_STRING_NAMED)
@@ -1790,10 +1722,10 @@ static void apply_propstore_val(MutationOperator op, LNKGeneratorState* state){
             // materialization, enumeration, or deletion
             if(storage->value_count < 2) break;
             if(storage->name_scheme == PROPVAL_STRING_NAMED) break; // PIDs are for integer-named only
-            int a = mutate_rand() % storage->value_count;
+            int a = lnk_rand(rng) % storage->value_count;
             int b;
             do{
-                b = mutate_rand() % storage->value_count;
+                b = lnk_rand(rng) % storage->value_count;
             } while(b == a);
             storage->values[b].integer_named.property_id = storage->values[a].integer_named.property_id;
             break;
@@ -1802,7 +1734,7 @@ static void apply_propstore_val(MutationOperator op, LNKGeneratorState* state){
         case MUTATE_PROPSTORE_RESERVED_NONZERO:{
             // reserved byte must be 0x00 according to spec
             // tests if any parser uses this byte as a flag, index, or size
-            uint8_t reserved = 1 + (mutate_rand() % 255);
+            uint8_t reserved = 1 + (lnk_rand(rng) % 255);
             if(val->name_scheme == PROPVAL_STRING_NAMED)
                 val->string_named.reserved = reserved;
             else
@@ -1825,14 +1757,14 @@ static void apply_propstore_val(MutationOperator op, LNKGeneratorState* state){
 }
 
 // TypedPropertyValue VARTYPE/padding
-static void apply_propstore_tpv(MutationOperator op, LNKGeneratorState* state){
+static void apply_propstore_tpv(LNKRand* rng, MutationOperator op, LNKGeneratorState* state){
     SerializedPropertyStore* ps = &state->propstore;
     if(ps->storage_count < 1) return;
 
     // pick random storage, pick random value, corrupt TypedPropertyValue fields
-    int idx = mutate_rand() % ps->storage_count;
+    int idx = lnk_rand(rng) % ps->storage_count;
     SerializedPropertyStorage* storage = &ps->storages[idx];
-    int val_idx = mutate_rand() % storage->value_count;
+    int val_idx = lnk_rand(rng) % storage->value_count;
     SerializedPropertyValue* val = &storage->values[val_idx];
 
     TypedPropertyValue* tpv;
@@ -1862,7 +1794,7 @@ static void apply_propstore_tpv(MutationOperator op, LNKGeneratorState* state){
                 0x004A, 0x004B, 0x00FF,         // gap: after VT_VERSIONED_STREAM
                 0x0100, 0x0200, 0x0FFF,         // mid-range: no handler exists
             };
-            tpv->vt = invalid_vartypes[mutate_rand() % (sizeof(invalid_vartypes) / sizeof(invalid_vartypes[0]))];
+            tpv->vt = invalid_vartypes[lnk_rand(rng) % (sizeof(invalid_vartypes) / sizeof(invalid_vartypes[0]))];
             break;
         }
 
@@ -1886,7 +1818,7 @@ static void apply_propstore_tpv(MutationOperator op, LNKGeneratorState* state){
                 VT_I8, VT_UI8, VT_INT, VT_UINT,
                 VT_LPSTR, VT_LPWSTR,
             };
-            tpv->vt = VT_BYREF | base_vartypes[mutate_rand() % (sizeof(base_vartypes) / sizeof(base_vartypes[0]))];
+            tpv->vt = VT_BYREF | base_vartypes[lnk_rand(rng) % (sizeof(base_vartypes) / sizeof(base_vartypes[0]))];
             break;
         }
 
@@ -1904,7 +1836,7 @@ static void apply_propstore_tpv(MutationOperator op, LNKGeneratorState* state){
                 VT_LPSTR, VT_LPWSTR, VT_FILETIME, VT_CLSID,
                 VT_VARIANT, // VT_VECTOR | VT_VARIANT = array of nested variants
             };
-            tpv->vt = VT_VECTOR | base_types[mutate_rand() % (sizeof(base_types) / sizeof(base_types[0]))];
+            tpv->vt = VT_VECTOR | base_types[lnk_rand(rng) % (sizeof(base_types) / sizeof(base_types[0]))];
             break;
         }
 
@@ -1920,7 +1852,7 @@ static void apply_propstore_tpv(MutationOperator op, LNKGeneratorState* state){
             uint16_t stream_types[] = {
                 VT_STREAM, VT_STORAGE, VT_STREAMED_OBJECT, VT_STORED_OBJECT,
             };
-            tpv->vt = stream_types[mutate_rand() % 4];
+            tpv->vt = stream_types[lnk_rand(rng) % 4];
             break;
         }
 
@@ -1947,7 +1879,7 @@ static void apply_propstore_tpv(MutationOperator op, LNKGeneratorState* state){
             uint16_t base_types[] = {
                 VT_I4, VT_BSTR, VT_BOOL, VT_LPWSTR, VT_FILETIME, VT_CLSID,
             };
-            tpv->vt = VT_RESERVED | base_types[mutate_rand() % 6];
+            tpv->vt = VT_RESERVED | base_types[lnk_rand(rng) % 6];
             break;
         }
 
@@ -1959,7 +1891,7 @@ static void apply_propstore_tpv(MutationOperator op, LNKGeneratorState* state){
             // if any code masks with 0xFFFF to extract vt but another code path
             // reads the full DWORD, the padding bytes become part of the type.
             // 0x0001 in padding makes the DWORD 0x0001xxxx instead of 0x0000xxxx.
-            tpv->padding = 1 + (mutate_rand() % 0xFFFE); // 1-0xFFFF, guaranteed non-zero
+            tpv->padding = 1 + (lnk_rand(rng) % 0xFFFE); // 1-0xFFFF, guaranteed non-zero
             break;
         }
 
@@ -1975,10 +1907,10 @@ static void apply_propstore_tpv(MutationOperator op, LNKGeneratorState* state){
             // craft ValueSize so the NEXT value starts at a non-8-aligned offset.
             if(val->name_scheme == PROPVAL_STRING_NAMED){
                 if((val->string_named.value_size & 7) == 0)
-                    val->string_named.value_size += 1 + (mutate_rand() % 7);
+                    val->string_named.value_size += 1 + (lnk_rand(rng) % 7);
             } else{
                 if((val->integer_named.value_size & 7) == 0)
-                    val->integer_named.value_size += 1 + (mutate_rand() % 7);
+                    val->integer_named.value_size += 1 + (lnk_rand(rng) % 7);
             }
             break;
         }
@@ -1992,7 +1924,7 @@ static void apply_propstore_tpv(MutationOperator op, LNKGeneratorState* state){
 // payload layout inside block->data (780 bytes):
 //   [0..260)    ANSI  descriptor     (char[260], NUL-terminated in well-formed files)
 //   [260..780)  UTF-16LE descriptor  (uint16_t[260], NUL-terminated)
-static void apply_darwin(MutationOperator op, LNKGeneratorState* state){
+static void apply_darwin(LNKRand* rng, MutationOperator op, LNKGeneratorState* state){
     ExtraDataBlock* block = find_extra_block(&state->extradata, EXTRA_DARWIN);
     if(!block || !block->data) return;
 
@@ -2048,7 +1980,7 @@ static void apply_darwin(MutationOperator op, LNKGeneratorState* state){
             };
 
             int count = sizeof(payloads) / sizeof(payloads[0]);
-            const char* payload = payloads[mutate_rand() % count];
+            const char* payload = payloads[lnk_rand(rng) % count];
             size_t payload_len = strlen(payload);
             if(payload_len > 259) payload_len = 259;
 
@@ -2069,7 +2001,7 @@ static void apply_darwin(MutationOperator op, LNKGeneratorState* state){
             // parser expects null-terminated string within 260 bytes.
             // without terminator, strlen/strcpy reads past buffer, reads
             // whatever comes after the buffer in the ExtraData stream or heap.
-            int r = mutate_rand() % 100;
+            int r = lnk_rand(rng) % 100;
             if(r < 50){
                 memset(ansi, 'A', 260); // 'A' easy to read in crash dump or !heap
                 for(int i = 0; i < 520; i+=2){
@@ -2079,10 +2011,10 @@ static void apply_darwin(MutationOperator op, LNKGeneratorState* state){
             } else{
                 // random non-null bytes
                 for(int i = 0; i < 260; i++)
-                    ansi[i] = 1 + (mutate_rand() % 255);
+                    ansi[i] = 1 + (lnk_rand(rng) % 255);
                 for(int i = 0; i < 520; i+=2){
-                    uni[i] = 1 + (mutate_rand() % 255);
-                    uni[i+1] = mutate_rand() & 0xFF;
+                    uni[i] = 1 + (lnk_rand(rng) % 255);
+                    uni[i+1] = lnk_rand(rng) & 0xFF;
                 }
             }
             // explicitly no null term
@@ -2108,7 +2040,7 @@ static void apply_darwin(MutationOperator op, LNKGeneratorState* state){
                 "{00000000}",                               // truncated
                 "{{00000000-0000-0000-0000-000000000000}}", // double braces
             };
-            int r = mutate_rand() % 8;
+            int r = lnk_rand(rng) % 8;
             size_t len = strlen(bad_guids[r]);
             if(len > 259) len = 259;
 
@@ -2128,9 +2060,9 @@ static void apply_darwin(MutationOperator op, LNKGeneratorState* state){
             // MSI parser may stop at the first null (truncated parse),
             // while shell32 uses the full 260-byte field.
             // mismatch on string len
-            int num_nulls = 1 + (mutate_rand() % 10);
+            int num_nulls = 1 + (lnk_rand(rng) % 10);
             for(int i = 0; i < num_nulls; i++){
-                int pos = mutate_rand() % 259; // not touching last byte
+                int pos = lnk_rand(rng) % 259; // not touching last byte
                 ansi[pos] = '\0';
                 uni[pos * 2] = 0;
                 uni[pos * 2 + 1] = 0;
@@ -2143,9 +2075,9 @@ static void apply_darwin(MutationOperator op, LNKGeneratorState* state){
             // no structure, no GUIDs, no null terminators
             // every parsing assumption is violated at once
             for(int i = 0; i < 260; i++)
-                ansi[i] = mutate_rand() & 0xFF;
+                ansi[i] = lnk_rand(rng) & 0xFF;
             for(int i = 0; i < 520; i++)
-                uni[i] = mutate_rand() & 0xFF;
+                uni[i] = lnk_rand(rng) & 0xFF;
             break;
         }
 
@@ -2163,7 +2095,7 @@ static void apply_darwin(MutationOperator op, LNKGeneratorState* state){
 //   [40..56)  Droid[1] ObjectID GUID            (bytes 10-15 contain MAC address if UUIDv1)
 //   [56..72)  DroidBirth[0] BirthVolumeID GUID
 //   [72..88)  DroidBirth[1] BirthObjectID GUID
-static void apply_tracker(MutationOperator op, LNKGeneratorState* state){
+static void apply_tracker(LNKRand* rng, MutationOperator op, LNKGeneratorState* state){
     ExtraDataBlock* block = find_extra_block(&state->extradata, EXTRA_TRACKER);
     if(!block || !block->data) return;
     if(block->size < 8 + 88) return; // 8 header + 88 payload
@@ -2176,7 +2108,7 @@ static void apply_tracker(MutationOperator op, LNKGeneratorState* state){
             // values below 0x58 return E_INVALIDARG. values above 0x58 pass.
             // on failure, the CALLER (_LoadFromStream) calls CTracker::InitNew.
             uint32_t val;
-            int r = mutate_rand() % 100;
+            int r = lnk_rand(rng) % 100;
             if(r < 20)
                 val = 0;     // zero: E_INVALIDARG, tests _InitRPC leak on rejection
             else if(r < 40)
@@ -2188,7 +2120,7 @@ static void apply_tracker(MutationOperator op, LNKGeneratorState* state){
             else if(r < 90)
                 val = 4;     // below 0x58, E_INVALIDARG
             else
-                val = mutate_rand() & 0xFFFF;
+                val = lnk_rand(rng) & 0xFFFF;
             memcpy(data, &val, 4);
             break;
         }
@@ -2200,13 +2132,13 @@ static void apply_tracker(MutationOperator op, LNKGeneratorState* state){
             // _InitRPC runs before all checks: upon version rejection, RPC state
             // was initialized but never used. tests if caller cleans up RPC state.
             uint32_t val;
-            int r = mutate_rand() % 100;
+            int r = lnk_rand(rng) % 100;
             if(r < 40)
                 val = 1; // min nonzero
             else if(r < 70)
                 val = 0xFFFFFFFF; // max, tests signed/unsigned confusion
             else
-                val = mutate_rand();
+                val = lnk_rand(rng);
             memcpy(data + 4, &val, 4);
             break;
         }
@@ -2226,7 +2158,7 @@ static void apply_tracker(MutationOperator op, LNKGeneratorState* state){
             //
             //   . all zero GUIDs (GUID_NULL) may pass null ptr checks but
             //     fail NTFS $ObjId lookups in unexpected ways.
-            int r = mutate_rand() % 100;
+            int r = lnk_rand(rng) % 100;
             if(r < 15){
                 data[24] ^= 0x01; // flip LSB of VolumeID byte 0 (toggles CrossVolumeMoveFlag)
             } else if(r < 30){
@@ -2234,21 +2166,21 @@ static void apply_tracker(MutationOperator op, LNKGeneratorState* state){
             } else if(r < 45){
                 memset(data + 56, 0, 32); // GUID_NULL DroidBirth
             } else if(r < 60){
-                memset(data + 24 + (mutate_rand() % 2) * 32, 0xFF, 32); // all 0xFF max GUID values
+                memset(data + 24 + (lnk_rand(rng) % 2) * 32, 0xFF, 32); // all 0xFF max GUID values
             } else if(r < 75){
                 // make Droid != DroidBirth to trigger cross-volume resolution
                 // copy Droid, flip some bytes so they differ
                 memcpy(data + 24, data + 56, 32); // start equal
-                int num = 1 + (mutate_rand() % 8);
+                int num = 1 + (lnk_rand(rng) % 8);
                 for(int i = 0; i < num; i++)
-                    data[24 + (mutate_rand() % 32)] ^= 1 + (mutate_rand() % 255);
+                    data[24 + (lnk_rand(rng) % 32)] ^= 1 + (lnk_rand(rng) % 255);
             } else{
                 // random bytes in one of the four GUID fields
-                int field = mutate_rand() % 4; // 0=VolumeID, 1=ObjectID, 2=BirthVolumeID, 3=BirthObjectID
+                int field = lnk_rand(rng) % 4; // 0=VolumeID, 1=ObjectID, 2=BirthVolumeID, 3=BirthObjectID
                 int offset = 24 + (field * 16);
-                int num = 1 + (mutate_rand() % 8);
+                int num = 1 + (lnk_rand(rng) % 8);
                 for(int i = 0; i < num; i++)
-                    data[offset + (mutate_rand() % 16)] ^= 1 + (mutate_rand() % 255);
+                    data[offset + (lnk_rand(rng) % 16)] ^= 1 + (lnk_rand(rng) % 255);
             }
             break;
         }
@@ -2258,7 +2190,7 @@ static void apply_tracker(MutationOperator op, LNKGeneratorState* state){
             // raw 16-byte OWORD copy into this+72 with no null termination or
             // NetBIOS format check. downstream DLT resolution uses this as a
             // hostname for outbound SMB connection to \\MachineID\pipe\trkwks.
-            int r = mutate_rand() % 100;
+            int r = lnk_rand(rng) % 100;
             if(r < 25){
                 // fill all 16 bytes non-zero, no null terminator.
                 // trkwks.dll!CRpcClientBinding::RcInitialize calls RaiseIfInvalid
@@ -2269,14 +2201,14 @@ static void apply_tracker(MutationOperator op, LNKGeneratorState* state){
                 // also tests whether the exception from RaiseIfInvalid is
                 // handled cleanly by the caller.
                 for(int i = 8; i < 24; i++)
-                    data[i] = 'A' + (mutate_rand() % 26);
+                    data[i] = 'A' + (lnk_rand(rng) % 26);
             } else if(r < 35){
                 // byte 15 = 0x00, bytes 0-14 all non-zero.
                 // passes RaiseIfInvalid (byte 15 == 0).
                 // strlen returns 15, mbstowcs_s writes 16 wchars into DstBuf[16].
                 // an exact fit will test boundary of stack buffer.
                 for(int i = 8; i < 23; i++)
-                    data[i] = 'A' + (mutate_rand() % 26);
+                    data[i] = 'A' + (lnk_rand(rng) % 26);
                 data[23] = 0x00;
             } else if(r < 40){
                 // all null, empty machine name
@@ -2290,16 +2222,16 @@ static void apply_tracker(MutationOperator op, LNKGeneratorState* state){
                 // name than what CTracker stored. bytes after the null sit in
                 // the CTracker object but are never used for resolution.
                 for(int i = 8; i < 24; i++)
-                    data[i] = 'A' + (mutate_rand() % 26);
-                int num_nulls = 1 + (mutate_rand() % 4);
+                    data[i] = 'A' + (lnk_rand(rng) % 26);
+                int num_nulls = 1 + (lnk_rand(rng) % 4);
                 for(int i = 0; i < num_nulls; i++)
-                    data[8 + 1 + (mutate_rand() % 14)] = '\0';
+                    data[8 + 1 + (lnk_rand(rng) % 14)] = '\0';
             } else if(r < 70){
                 // non ASCII bytes, stress codepage conversion.
                 // MachineID uses system default codepage (ASCII), high bytes
                 // trigger MultiByteToWideChar conversion paths.
                 for(int i = 8; i < 24; i++)
-                    data[i] = 0x80 + (mutate_rand() % 0x80);
+                    data[i] = 0x80 + (lnk_rand(rng) % 0x80);
             } else if(r < 85){
                 // path separator characters: backslashes and dots.
                 // if downstream code concats MachineID into a path
@@ -2311,7 +2243,7 @@ static void apply_tracker(MutationOperator op, LNKGeneratorState* state){
             } else{
                 // fully random bytes
                 for(int i = 8; i < 24; i++)
-                    data[i] = mutate_rand() & 0xFF;
+                    data[i] = lnk_rand(rng) & 0xFF;
             }
             break;
         }
@@ -2324,7 +2256,7 @@ static void apply_tracker(MutationOperator op, LNKGeneratorState* state){
 // payload layout inside block->data (20 bytes):
 //   [0..16]   KnownFolderID  GUID
 //   [16..20]  Offset         uint32 offset into IDList where the first child segment of the namespace ctx begins
-static void apply_knownfolder(MutationOperator op, LNKGeneratorState* state){
+static void apply_knownfolder(LNKRand* rng, MutationOperator op, LNKGeneratorState* state){
     static const uint8_t KNOWN_FOLDER_GUIDS[][16] = {
         // virtual namespace folders — no filesystem path, create virtual PIDLs
         {0xEB,0x4A,0xA7,0x82,0xB4,0xAE,0x5C,0x46,0xA0,0x14,0xD0,0x97,0xEE,0x34,0x6D,0x63}, // ControlPanelFolder
@@ -2351,12 +2283,12 @@ static void apply_knownfolder(MutationOperator op, LNKGeneratorState* state){
             // drive IKnownFolderManager::GetFolder() into a "not found" error path.
             // either pick a known GUID from KNOWN_FOLDER_GUIDS (likely valid but wrong for LNK),
             // or random bytes (almost certainly unregistered). 50/50 split.
-            if(mutate_rand_bool(0.5)){
-                int idx = mutate_rand() % KNOWN_FOLDER_GUID_COUNT;
+            if(lnk_rand_bool(rng, 0.5)){
+                int idx = lnk_rand(rng) % KNOWN_FOLDER_GUID_COUNT;
                 memcpy(data, KNOWN_FOLDER_GUIDS[idx], 16);
             } else{
                 for(int i = 0; i < KNOWN_FOLDER_GUID_COUNT; i++)
-                    data[i] = mutate_rand() & 0xFF;
+                    data[i] = lnk_rand(rng) & 0xFF;
             }
             break;
         }
@@ -2373,7 +2305,7 @@ static void apply_knownfolder(MutationOperator op, LNKGeneratorState* state){
                 0,                                      // zero offset, refers back to root
                 4,                                      // tiny offset, lands inside size prefix of first item in IDList
             };
-            uint32_t val = boundaries[mutate_rand() % (sizeof(boundaries) / sizeof(boundaries[0]))];
+            uint32_t val = boundaries[lnk_rand(rng) % (sizeof(boundaries) / sizeof(boundaries[0]))];
             memcpy(data + 16, &val, 4);
             break;
         }
@@ -2400,7 +2332,7 @@ static void apply_knownfolder(MutationOperator op, LNKGeneratorState* state){
 //   [0..4)   SpecialFolderID  CSIDL integer (Constant Special Item ID List)
 //   [4..8)   Offset           uint32 offset into IDList for first child segment
 //   [8..16)  Reserved         must be zero per spec
-static void apply_specialfolder(MutationOperator op, LNKGeneratorState* state){
+static void apply_specialfolder(LNKRand* rng, MutationOperator op, LNKGeneratorState* state){
     // CSIDL constants of interest. CSIDL_CONTROLS (3) is the CVE-2017-8464
     // attack vector – it switches namespace context to Control Panel and treats
     // the LinkTargetIDList path as a CPL module to LoadLibrary.
@@ -2476,7 +2408,7 @@ static void apply_specialfolder(MutationOperator op, LNKGeneratorState* state){
             // MUTATE_SPECIALFOLDER_RANDOM still exists to occasionally exercise the NULL return path
             // for caller cleanup bugs.
             if(!data) return;
-            uint32_t val = CSIDL_INTERESTING[mutate_rand() % CSIDL_INTERESTING_COUNT];
+            uint32_t val = CSIDL_INTERESTING[lnk_rand(rng) % CSIDL_INTERESTING_COUNT];
             memcpy(data, &val, 4);
             break;
         }
@@ -2491,7 +2423,7 @@ static void apply_specialfolder(MutationOperator op, LNKGeneratorState* state){
             //
             // The usefulness of this operator depends on what the caller does with teh failed decode.
             if(!data) return;
-            uint32_t val = mutate_rand(); // uniform. any extra weighting would be unjustified bias.
+            uint32_t val = lnk_rand(rng); // uniform. any extra weighting would be unjustified bias.
             memcpy(data, &val, 4);
             break;
         }
@@ -2535,7 +2467,7 @@ static void apply_specialfolder(MutationOperator op, LNKGeneratorState* state){
                 state->linktargetidlist.total_size - 1, // 1 short of end, lands one byte before terminator
                 4,                                      // 4 bytes in, inside first item's payload; passes only if first item has cb == 4
             };
-            uint32_t val = boundaries[mutate_rand() % (sizeof(boundaries) / sizeof(boundaries[0]))];
+            uint32_t val = boundaries[lnk_rand(rng) % (sizeof(boundaries) / sizeof(boundaries[0]))];
             memcpy(data + 4, &val, 4);
             break;
         }
@@ -2556,20 +2488,20 @@ static void apply_specialfolder(MutationOperator op, LNKGeneratorState* state){
 // serialize() produces the LNK file byte buffer, the harness reads that
 // request and applies the actual byte-level mutation (truncate, append, overlap)
 // before returning to the fuzzer.
-static void apply_file(MutationOperator op, LNKGeneratorState* state){
+static void apply_file(LNKRand* rng, MutationOperator op, LNKGeneratorState* state){
     switch(op){
         case MUTATE_FILE_TRUNCATE:{
             // cut n bytes off the end of the serialized file
-            int r = mutate_rand() % 100;
+            int r = lnk_rand(rng) % 100;
             int n;
             if(r < 30)
-                n = 1 + (mutate_rand() % 8); // tiny, kills ExtraData 4-byte term, parser reads past EOF looking for next block
+                n = 1 + (lnk_rand(rng) % 8); // tiny, kills ExtraData 4-byte term, parser reads past EOF looking for next block
             else if(r < 60)
-                n = 1 + (mutate_rand() % 64); // small, drops an entire ExtraData block, tests handling when a block is declared present but isnt
+                n = 1 + (lnk_rand(rng) % 64); // small, drops an entire ExtraData block, tests handling when a block is declared present but isnt
             else if(r < 85)
-                n = 64 + (mutate_rand() % 256); // medium, truncates inside an ExtraData block's payload, produces a block with partial data
+                n = 64 + (lnk_rand(rng) % 256); // medium, truncates inside an ExtraData block's payload, produces a block with partial data
             else
-                n = 256 + (mutate_rand() % 1024); // large, lands inside PropertyStore or PIDL, produces malformed structure
+                n = 256 + (lnk_rand(rng) % 1024); // large, lands inside PropertyStore or PIDL, produces malformed structure
             state->postserialize_op  = POSTSERIALIZE_TRUNCATE;
             state->postserialize_arg = n;
             break;
@@ -2581,14 +2513,14 @@ static void apply_file(MutationOperator op, LNKGeneratorState* state){
             // terminator and interprets the appended bytes as another block hdr, the mutation effectively produces a block whose
             // size and signature are attacker-controlled. Large appends are weighted higher bc they're more likely to contain
             // plausible looking block headers by chance.
-            int r = mutate_rand() % 100;
+            int r = lnk_rand(rng) % 100;
             int n;
             if(r < 40)
-                n = 1 + (mutate_rand() % 16); // small amnt of trailing garbage data
+                n = 1 + (lnk_rand(rng) % 16); // small amnt of trailing garbage data
             else if(r < 75)
-                n = 16 + (mutate_rand() % 256); // moderate
+                n = 16 + (lnk_rand(rng) % 256); // moderate
             else
-                n = 256 + (mutate_rand() % 4096); // large, maybe parsed as new block somehow lol
+                n = 256 + (lnk_rand(rng) % 4096); // large, maybe parsed as new block somehow lol
             state->postserialize_op = POSTSERIALIZE_APPEND_GARBAGE;
             state->postserialize_arg = n;
             break;
@@ -2603,7 +2535,7 @@ static void apply_file(MutationOperator op, LNKGeneratorState* state){
             //   2 = StringData
             //   3 = First ExtraData block
             state->postserialize_op = POSTSERIALIZE_SECTION_OVERLAP;
-            state->postserialize_arg = mutate_rand() % 4;
+            state->postserialize_arg = lnk_rand(rng) % 4;
             break;
         }
 
@@ -2613,31 +2545,31 @@ static void apply_file(MutationOperator op, LNKGeneratorState* state){
 }
 
 // do mutation
-static void op_apply(MutationOperator op, LNKGeneratorState* state, LNKLayout* layout){
+static void op_apply(LNKRand* rng, MutationOperator op, LNKGeneratorState* state, LNKLayout* layout){
     switch(op_to_group[op]){
-        case GROUP_STRUCTURE:     apply_structure(op, state);     break;
-        case GROUP_FLAGS:         apply_flags(op, state);         break;
-        case GROUP_SIZES:         apply_sizes(op, state, layout); break;
-        case GROUP_PIDL:          apply_pidl(op, state);          break;
-        case GROUP_OFFSETS:       apply_offsets(op, state);       break;
-        case GROUP_EXTRA_SEQ:     apply_extra_seq(op, state);     break;
-        case GROUP_EXTRA_HDR:     apply_extra_hdr(op, state);     break;
-        case GROUP_PROPSTORE_SET: apply_propstore_set(op, state); break;
-        case GROUP_PROPSTORE_VAL: apply_propstore_val(op, state); break;
-        case GROUP_PROPSTORE_TPV: apply_propstore_tpv(op, state); break;
-        case GROUP_DARWIN:        apply_darwin(op, state);        break;
-        case GROUP_TRACKER:       apply_tracker(op, state);       break;
-        case GROUP_KNOWNFOLDER:   apply_knownfolder(op, state);   break;
-        case GROUP_SPECIALFOLDER: apply_specialfolder(op, state); break;
-        case GROUP_FILE:          apply_file(op, state);          break;
+        case GROUP_STRUCTURE:     apply_structure(rng, op, state);     break;
+        case GROUP_FLAGS:         apply_flags(rng, op, state);         break;
+        case GROUP_SIZES:         apply_sizes(rng, op, state, layout); break;
+        case GROUP_PIDL:          apply_pidl(rng, op, state);          break;
+        case GROUP_OFFSETS:       apply_offsets(rng, op, state);       break;
+        case GROUP_EXTRA_SEQ:     apply_extra_seq(rng, op, state);     break;
+        case GROUP_EXTRA_HDR:     apply_extra_hdr(rng, op, state);     break;
+        case GROUP_PROPSTORE_SET: apply_propstore_set(rng, op, state); break;
+        case GROUP_PROPSTORE_VAL: apply_propstore_val(rng, op, state); break;
+        case GROUP_PROPSTORE_TPV: apply_propstore_tpv(rng, op, state); break;
+        case GROUP_DARWIN:        apply_darwin(rng, op, state);        break;
+        case GROUP_TRACKER:       apply_tracker(rng, op, state);       break;
+        case GROUP_KNOWNFOLDER:   apply_knownfolder(rng, op, state);   break;
+        case GROUP_SPECIALFOLDER: apply_specialfolder(rng, op, state); break;
+        case GROUP_FILE:          apply_file(rng, op, state);          break;
         default: break;
     }
 }
 
 // called once per LnkMutator (i.e., once per worker thread).
 // seed comes from the caller — LnkMutator's ctor decides policy.
-void mutate_scheduler_init(uint64_t seed){
-    mutate_rand_seed(seed);
+void mutate_scheduler_init(LNKRand* rng, uint64_t seed){
+    lnk_rand_seed(rng, seed);
 
     // Beta(1, 1) = uniform prior. no belief about any arm's rate yet.
     for(int g = 0; g < GROUP_COUNT; g++){
@@ -2664,14 +2596,14 @@ void mutate_report(MutationOperator op, int new_cov){
     }
 }
 
-MutationOperator mutate_apply(LNKGeneratorState* state, LNKLayout* layout){
+MutationOperator mutate_apply(LNKRand* rng, LNKGeneratorState* state, LNKLayout* layout){
     // Lvl 1: Select a group using Thompson Sampling
     // for k = 1..K, sample θ̂_k ~ Beta(α_k, β_k)
     // K = groups
     double best_score = -1.0;
     MutationOperatorGroup chosen_group = 0;
     for(int g = 0; g < GROUP_COUNT; g++){
-        double theta = sample_beta(group_alpha[g], group_beta[g]);
+        double theta = sample_beta(rng, group_alpha[g], group_beta[g]);
         if(theta > best_score){
             best_score = theta;
             chosen_group = g;
@@ -2702,7 +2634,7 @@ MutationOperator mutate_apply(LNKGeneratorState* state, LNKLayout* layout){
     best_score = -1.0;
     MutationOperator chosen_op = candidates[0];
     for(int i = 0; i < count; i++){
-        double s = sample_beta(op_alpha[candidates[i]], op_beta[candidates[i]]);
+        double s = sample_beta(rng, op_alpha[candidates[i]], op_beta[candidates[i]]);
         if(s > best_score){
             best_score = s;
             chosen_op = candidates[i];
@@ -2710,7 +2642,7 @@ MutationOperator mutate_apply(LNKGeneratorState* state, LNKLayout* layout){
     }
 
     // apply mutation
-    op_apply(chosen_op, state, layout);
+    op_apply(rng, chosen_op, state, layout);
 
     return chosen_op;
 }

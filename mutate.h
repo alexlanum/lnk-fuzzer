@@ -6,6 +6,7 @@
 #define MUTATE_H
 
 #include "model.h"
+#include "lnk_prng.h"
 
 /**
  * Mutation stategies
@@ -154,14 +155,17 @@ typedef enum {
 LNKLayout mutate_extract_layout(LNKGeneratorState* state);
 
 /**
- * Initialize scheduler (call once @ startup)
+ * Initialize scheduler (call once per worker thread).
+ * `rng` is the per-thread PRNG that will be used for both seeding
+ * and all subsequent sampling. Caller owns the LNKRand storage.
  */
-void mutate_scheduler_init(uint64_t seed);
+void mutate_scheduler_init(LNKRand* rng, uint64_t seed);
 
 /**
- * Choose a mutation operator, apply it, ret which was used
+ * Choose a mutation operator, apply it, ret which was used.
+ * Pass the same `rng` used for mutate_scheduler_init.
  */
-MutationOperator mutate_apply(LNKGeneratorState* state, LNKLayout* layout);
+MutationOperator mutate_apply(LNKRand* rng, LNKGeneratorState* state, LNKLayout* layout);
 
 /**
  * Report coverage result back to scheduler
