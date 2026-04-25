@@ -188,7 +188,7 @@ C:\fuzzing\
 │   └── build\         ← where fuzzer.exe lands after you build it
 │
 ├── pe-parse\          ← the target library (clone from GitHub)
-│   └── build\         ← where pe-parse.lib lands after you build it
+│   └── build\         ← where pe-parse.lib lands after you build it (harness links against the .lib)
 │
 └── pe-fuzz\           ← YOUR project: the harness, corpus, output
     ├── harness.cpp    ← ~40 lines you write, calls pe-parse on input bytes
@@ -361,4 +361,18 @@ C:\fuzzing\
 
 
 - Crash detection: if `fuzz()` AVs (ex `test.cpp`'s `crash[0] = 1` when sample starts with "test"), TinyInst's debugger catches the exception and reports `CRASH` to `fuzzer.exe`. Fuzzer dedups by crash-site hash, saves to `out/crashes/`.
+
+
+
+### Jackalope pe-parse harness
+
+```
+C:\Users\Me\source\repos\fuzzing\Jackalope\build\Release\fuzzer.exe -in corpus -out output -t 5000 -delivery shmem -instrument_module harness.exe -target_module harness.exe -target_method fuzz -nargs 1 -iterations 5000 -persist -loop -- .\build\Release\harness.exe -m "@@"
+```
+
+- `-instrument_module harness.exe` — instrument your harness binary (pe-parse is statically linked inside it)
+- `-target_module harness.exe` — target function lives in your harness
+- `-target_method fuzz` — same function name (your harness defined `fuzz()`)
+- `-iterations 5000` — PE parsing may accumulate heap fragmentation, so restart more often than `test.exe`'s 10000
+- `-t 5000` — 5 second timeout per iteration; some pathological PE inputs can make pe-parse loop briefly before returning
 
