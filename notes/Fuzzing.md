@@ -184,4 +184,86 @@ For my Thompson Sampling scheduler, noisy priors are strictly worse than no sche
 
 ## Jackalope with my PRNG
 
-Fratric explicitly designed Jackalope to be extended through the documented extension points: *"users can plug in custom components that would replace the default behavior."* My xoroshiro128++ PRNG is one of those pluggable components, exposed via the `Fuzzer::CreatePRNG` virtual.
+Fratric explicitly designed Jackalope to be extended through the documented extension points: *"users can plug in custom components that would replace the default behavior."* My xoroshiro128++ PRNG is one of those pluggable components, exposed via the `Fuzzer::CreatePRNG` virtual. `CreatePRNG()` is meant to be overriden in order to use custom PRNG.
+
+As it stands, by default:
+
+```c++
+// Jackalope/fuzzer.cpp
+PRNG *Fuzzer::CreatePRNG(int argc, char **argv, ThreadContext *tc){
+	return new MTPRNG();
+}
+```
+
+I'm going to subclass `PRNG`. Jackalope's per-thread PRNG instance will become my xoroshiro128++. One PRNG stream, one seed,  full reproducibility, no fork required.
+
+
+
+**Step 1**: extract PRNG into its own translation unit
+
+`Jackalope/prng.h`:
+
+```c++
+#include <inttypes.h>
+class PRNG{
+public:
+  virtual ~PRNG() {}
+  
+  static int SecureRandom(void *data, size_t size);
+
+  /* generates a random number on [0,0xffffffff]-interval */
+  virtual uint32_t Rand() = 0;
+
+  int Rand(int min, int max) {
+    if (min == max) return min;
+    return ((Rand() % (max - min + 1)) + min);
+  }
+
+  /* generates a random number on [0,1]-real-interval */
+  double RandReal() {
+    return Rand() * (1.0 / 4294967295.0);
+  }
+};
+```
+
+Subclassing `PRNG` means you inherit from it without touching it. The `LNKPRNG` structure lives entirely in your own `lnk_prng.cc` file, not inside the Jackalope tree. The header you `#include` in your wrapper is Jackalope's unmodified `prng.h`, because that's what defines the base class you're inheriting from.
+
+You read `Jackalope/prng.h` to see exactly which methods your subclass needs to override.
+
+Define subclass in `Lnk/lnk_prng_jackalope.cc`:
+
+```c#
+#include "Jackalope/prng.h"
+
+extern "C" {
+#include "lnk_prng.h"
+}
+
+class LNKPRNG : public PRNG{
+public:
+    explicit LNKPRNG(uint64_t seed) { lnk_rand_seed(&r_, seed); }
+
+    // The only override Jackalope requires.
+    // Returns the upper 32 bits of the xoroshiro output, matching what
+    // your old mutate_rand() did.
+    uint32_t Rand() override { return lnk_rand(&r_); }
+
+    // Non-virtual accessor for LNKMutator. Lets the C scheduler reach
+    // the underlying state without going through the (32-bit, lossy)
+    // Rand() interface for its 64-bit and double draws.
+    LNKRand* state() { return &r_; }
+
+private:
+    LNKRand r_;
+};
+```
+
+Jackalope's `PRNG` interface is 32-bit only. Its `RandReal()` synthesizes a double from a single 32-bit `Rand()` call, which means Jackalope's stock mutators get ~32 bits of entropy per real-valued draw. Your scheduler needs more than that: `sample_gamma` consumes uniform doubles with full 53-bit mantissa precision, which is why your `lnk_rand_double` does `(xoroshiro_output >> 11) * (1.0 / (1ULL << 53))`.
+
+This is why the wrapper has both `Rand()` (the override Jackalope's engine calls) and the `state()` accessor (what your scheduler uses). Two views of the same underlying xoroshiro stream:
+
+- Jackalope-side code (sample selection weights, etc.) calls `prng->Rand()` and gets 32 bits, computed by your xoroshiro and downshifted. Same path it'd take with the stock PRNG, just with a better generator behind it.
+- Your `LNKMutator::Mutate()` does `static_cast<LNKPRNG*>(prng)->state()` and hands the resulting `LNKRand*` to `mutate_apply`, which calls `lnk_rand_uniform64` and `lnk_rand_double` directly, getting the full 64-bit / 53-bit precision your scheduler needs.
+
+Both paths share one stream. Every call advances the same xoroshiro state, so reproducibility holds, and you don't lose precision on the path that needs it.
+
