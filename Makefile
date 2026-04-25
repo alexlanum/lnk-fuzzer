@@ -8,12 +8,12 @@ LDFLAGS = -fsanitize=address,undefined
 
 # Core mutator sources. These same files get pulled into the
 # Windows fuzzer build via CMake; keep this list in sync.
-CORE = serialize.c deserialize.c mutate.c gen.c
+CORE = serialize.c deserialize.c mutate.c gen.c lnk_prng.c
 
 # Round-trip sanity check. Run this when the Windows fuzzer
 # misbehaves to rule out the C core before blaming Jackalope.
 lnk_test: test.c $(CORE)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
 
 test: lnk_test
 	./lnk_test
