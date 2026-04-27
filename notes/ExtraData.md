@@ -36,7 +36,7 @@ Each GUID field uses [MS-DTYP 2.3.4.2][https://winprotocoldoc.z19.web.core.windo
 
 `CTracker::Load` is a non-exported class in shell32.dll:
 
-```
+```c
 CShellLink::_LoadFromStream
   . SHReadDataBlockList()                   // iterates ExtraData by BlockSize
   . stores all blocks in m_pDBList
