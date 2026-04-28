@@ -3,6 +3,10 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct{
     uint64_t smstate;   // splitmix64 state, used only at seed time
     uint64_t xstate[2]; // xoroshiro128++ state, used for all ouput
@@ -36,5 +40,9 @@ double lnk_rand_double(LNKRand* rng);
  
 /** Biased coin flip. Returns 1 with probability p, else 0. */
 int lnk_rand_bool(LNKRand* rng, double p);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

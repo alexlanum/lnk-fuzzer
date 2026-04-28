@@ -10,6 +10,7 @@
 #include <math.h>
 #include "clsids.h"
 
+
 /**
  * Scheduler state — Thompson Sampling
  * Each operator and operator group maintain a Beta distribution
@@ -1778,20 +1779,20 @@ static void apply_propstore_tpv(LNKRand* rng, MutationOperator op, LNKGeneratorS
             // DeserializeHelper::Worker validates vt via CheckVarType() before dispatch.
             // if CheckVarType passes, Worker uses a jump table to route to type-specific handlers.
             // CheckVarType only accepts base types (vt & 0xFFF):
-            //   0x00-0x0E (VT_EMPTY through VT_DECIMAL)
-            //   0x10-0x1F (VT_I1 through VT_LPWSTR)
-            //   0x24-0x26 (VT_RECORD, VT_INT_PTR, VT_UINT_PTR)
-            //   0x40-0x49 (VT_FILETIME through VT_VERSIONED_STREAM)
-            // rejects: negative (bit 15), VT_VECTOR|VT_ARRAY together, everything else.
+            //   0x00-0x0E (LNK_VT_EMPTY through LNK_VT_DECIMAL)
+            //   0x10-0x1F (LNK_VT_I1 through LNK_VT_LPWSTR)
+            //   0x24-0x26 (LNK_VT_RECORD, LNK_VT_INT_PTR, LNK_VT_UINT_PTR)
+            //   0x40-0x49 (LNK_VT_FILETIME through LNK_VT_VERSIONED_STREAM)
+            // rejects: negative (bit 15), LNK_VT_VECTOR|LNK_VT_ARRAY together, everything else.
             // 
             // tests for rejection cleanup:
             //   rejection path in CheckVarType
             //   error handling in Worker
             uint16_t invalid_vartypes[] = {
-                0x000F,                         // gap: VT_DECIMAL+1, only gap inside the low range
-                0x0020, 0x0021, 0x0022, 0x0023, // gap: after VT_LPWSTR
-                0x0027, 0x0028, 0x0030,         // gap: after VT_UINT_PTR
-                0x004A, 0x004B, 0x00FF,         // gap: after VT_VERSIONED_STREAM
+                0x000F,                         // gap: LNK_VT_DECIMAL+1, only gap inside the low range
+                0x0020, 0x0021, 0x0022, 0x0023, // gap: after LNK_VT_LPWSTR
+                0x0027, 0x0028, 0x0030,         // gap: after LNK_VT_UINT_PTR
+                0x004A, 0x004B, 0x00FF,         // gap: after LNK_VT_VERSIONED_STREAM
                 0x0100, 0x0200, 0x0FFF,         // mid-range: no handler exists
             };
             tpv->vt = invalid_vartypes[lnk_rand(rng) % (sizeof(invalid_vartypes) / sizeof(invalid_vartypes[0]))];
@@ -1800,49 +1801,49 @@ static void apply_propstore_tpv(LNKRand* rng, MutationOperator op, LNKGeneratorS
 
         case MUTATE_PROPSTORE_VT_BYREF:{
             // attack vector
-            // CheckVarType does not check for VT_BYREF:
-            //   . a1 < 0 catches VT_RESERVED (0x8000) because int16 makes it negative
+            // CheckVarType does not check for LNK_VT_BYREF:
+            //   . a1 < 0 catches LNK_VT_RESERVED (0x8000) because int16 makes it negative
             //   . but 0x4000 as int16 is positive (16384), passes the sign check
             //   . base type (lower 12 bits) is whitelisted, passes the switch
             //   . CheckVarType returns 0 (success)
             // then in DeserializeHelper::Worker:
-            //   bt di, 0Eh  <-- tests bit 14 (VT_BYREF flag)
+            //   bt di, 0Eh  <-- tests bit 14 (LNK_VT_BYREF flag)
             //   jb loc_...  <-- invokes BYREF handler
             // the BYREF handler interprets value bytes as pointer-sized data
             // this is the only modifier flag that passes CheckVarType and reaches
-            // a dedicated handler, VT_RESERVED, VT_VECTOR|VT_ARRAY etc. get caught,
-            // but VT_BYREF alone slips through.
+            // a dedicated handler, LNK_VT_RESERVED, LNK_VT_VECTOR|LNK_VT_ARRAY etc. get caught,
+            // but LNK_VT_BYREF alone slips through.
             uint16_t base_vartypes[] = {
-                VT_I2, VT_I4, VT_R4, VT_R8, VT_BSTR, VT_ERROR,
-                VT_BOOL, VT_I1, VT_UI1, VT_UI2, VT_UI4,
-                VT_I8, VT_UI8, VT_INT, VT_UINT,
-                VT_LPSTR, VT_LPWSTR,
+                LNK_VT_I2, LNK_VT_I4, LNK_VT_R4, LNK_VT_R8, LNK_VT_BSTR, LNK_VT_ERROR,
+                LNK_VT_BOOL, LNK_VT_I1, LNK_VT_UI1, LNK_VT_UI2, LNK_VT_UI4,
+                LNK_VT_I8, LNK_VT_UI8, LNK_VT_INT, LNK_VT_UINT,
+                LNK_VT_LPSTR, LNK_VT_LPWSTR,
             };
-            tpv->vt = VT_BYREF | base_vartypes[lnk_rand(rng) % (sizeof(base_vartypes) / sizeof(base_vartypes[0]))];
+            tpv->vt = LNK_VT_BYREF | base_vartypes[lnk_rand(rng) % (sizeof(base_vartypes) / sizeof(base_vartypes[0]))];
             break;
         }
 
         case MUTATE_PROPSTORE_VT_VECTOR:{
-            // VT_VECTOR (0x1000) triggers count-prefixed array parsing in DeserializeHelper::Worker.
-            // CheckVarType allows it: 0x1000 | base_type is positive, and the VT_VECTOR|VT_ARRAY check
-            // only rejects when both bits are set. VT_VECTOR alone passes.
+            // LNK_VT_VECTOR (0x1000) triggers count-prefixed array parsing in DeserializeHelper::Worker.
+            // CheckVarType allows it: 0x1000 | base_type is positive, and the LNK_VT_VECTOR|LNK_VT_ARRAY check
+            // only rejects when both bits are set. LNK_VT_VECTOR alone passes.
             // Worker reads a count from value bytes, allocates count * element_size,
             // then loops reading elements of the vector.
             // corrupted count with small buffer = OOB read
             // corrupted element_size with large count = int overflow in allocation
             uint16_t base_types[] = {
-                VT_I2, VT_I4, VT_R4, VT_R8, VT_BSTR,
-                VT_BOOL, VT_UI1, VT_UI4, VT_I8, VT_UI8,
-                VT_LPSTR, VT_LPWSTR, VT_FILETIME, VT_CLSID,
-                VT_VARIANT, // VT_VECTOR | VT_VARIANT = array of nested variants
+                LNK_VT_I2, LNK_VT_I4, LNK_VT_R4, LNK_VT_R8, LNK_VT_BSTR,
+                LNK_VT_BOOL, LNK_VT_UI1, LNK_VT_UI4, LNK_VT_I8, LNK_VT_UI8,
+                LNK_VT_LPSTR, LNK_VT_LPWSTR, LNK_VT_FILETIME, LNK_VT_CLSID,
+                LNK_VT_VARIANT, // LNK_VT_VECTOR | LNK_VT_VARIANT = array of nested variants
             };
-            tpv->vt = VT_VECTOR | base_types[lnk_rand(rng) % (sizeof(base_types) / sizeof(base_types[0]))];
+            tpv->vt = LNK_VT_VECTOR | base_types[lnk_rand(rng) % (sizeof(base_types) / sizeof(base_types[0]))];
             break;
         }
 
         case MUTATE_PROPSTORE_VT_STREAM:{
-            // VT_STREAM (0x42), VT_STORAGE (0x43), VT_STREAMED_OBJECT (0x44),
-            // VT_STORED_OBJECT (0x45) all pass CheckVarType (cases 66-69).
+            // LNK_VT_STREAM (0x42), LNK_VT_STORAGE (0x43), LNK_VT_STREAMED_OBJECT (0x44),
+            // LNK_VT_STORED_OBJECT (0x45) all pass CheckVarType (cases 66-69).
             // StgDeserializePropVariant pre-checks 0x43-0x46 before Worker:
             //   lea eax, [rcx-43h]
             //   test eax, 0FFFFFFF9h
@@ -1850,14 +1851,14 @@ static void apply_propstore_tpv(LNKRand* rng, MutationOperator op, LNKGeneratorS
             // these types trigger COM IStream/IStorage creation from value bytes.
             // the separate handler may create COM objects from attacker-controlled data.
             uint16_t stream_types[] = {
-                VT_STREAM, VT_STORAGE, VT_STREAMED_OBJECT, VT_STORED_OBJECT,
+                LNK_VT_STREAM, LNK_VT_STORAGE, LNK_VT_STREAMED_OBJECT, LNK_VT_STORED_OBJECT,
             };
             tpv->vt = stream_types[lnk_rand(rng) % 4];
             break;
         }
 
         case MUTATE_PROPSTORE_VT_VARIANT:{
-            // VT_VARIANT (0x0C) passes CheckVarType (case 12).
+            // LNK_VT_VARIANT (0x0C) passes CheckVarType (case 12).
             // in Worker's first jump table (byte_18000C6B0), vt 0x0C maps to
             // handler group 6 (default). but in the second jump table
             // (byte_18000C734 / jpt_18000BF21), it maps to handler group 5
@@ -1865,21 +1866,21 @@ static void apply_propstore_tpv(LNKRand* rng, MutationOperator op, LNKGeneratorS
             // crafted nesting depth could overflow the stack.
             // crafted inner vt could reach handlers the outer CheckVarType
             // wouldn't normally allow.
-            tpv->vt = VT_VARIANT;
+            tpv->vt = LNK_VT_VARIANT;
             break;
         }
 
         case MUTATE_PROPSTORE_VT_RESERVED:{
-            // VT_RESERVED (0x8000) — bit 15 set.
+            // LNK_VT_RESERVED (0x8000) — bit 15 set.
             // CheckVarType catches it: a1 < 0 (int16 sign check).
             // 0x8000 as int16 = -32768, rejected immediately.
             // this only tests rejection cleanup, not parsing.
-            // kept because VT_RESERVED | base_type combinations might
+            // kept because LNK_VT_RESERVED | base_type combinations might
             // behave differently than pure 0x8000 in the error path.
             uint16_t base_types[] = {
-                VT_I4, VT_BSTR, VT_BOOL, VT_LPWSTR, VT_FILETIME, VT_CLSID,
+                LNK_VT_I4, LNK_VT_BSTR, LNK_VT_BOOL, LNK_VT_LPWSTR, LNK_VT_FILETIME, LNK_VT_CLSID,
             };
-            tpv->vt = VT_RESERVED | base_types[lnk_rand(rng) % 6];
+            tpv->vt = LNK_VT_RESERVED | base_types[lnk_rand(rng) % 6];
             break;
         }
 

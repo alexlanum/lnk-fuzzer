@@ -8,6 +8,10 @@
 #include "model.h"
 #include "lnk_prng.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * Mutation stategies
  */
@@ -171,5 +175,9 @@ MutationOperator mutate_apply(LNKRand* rng, LNKGeneratorState* state, LNKLayout*
  * Report coverage result back to scheduler
  */
 void mutate_report(MutationOperator op, int new_cov);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

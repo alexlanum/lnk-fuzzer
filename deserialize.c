@@ -595,7 +595,7 @@ static int deserialize_stringdata(const uint8_t* buf, size_t len, size_t* off, S
                     memcpy(iv->typed_value.value, payload_data + tpv_off + 4, val_len);
                     iv->typed_value.value_len = val_len;
                 } else{
-                    iv->typed_value.value_len = 0; // VT_EMPTY / VT_NULL
+                    iv->typed_value.value_len = 0; // LNK_VT_EMPTY / LNK_VT_NULL
                 }
             } else{ // PROPVAL_STRING_NAMED
                 SerializedPropertyValueString* sv = &val->string_named;

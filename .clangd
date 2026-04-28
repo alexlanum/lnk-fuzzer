@@ -1,0 +1,12 @@
+# clangd config — tells the language server how to parse our C/C++ files.
+# Mirrors the include paths the actual build (CMake) will use:
+#   * "."        — our own headers (model.h, mutate.h, lnk_prng.h, etc.)
+#   * "Jackalope" — Jackalope's headers; needed because Jackalope's own
+#                   files include each other with bare names like #include "sample.h"
+CompileFlags:
+  Add:
+    - -I.
+    - -IJackalope
+    - -std=c++17
+  # Treat .cc files explicitly as C++ even if extension detection wavers.
+  Compiler: clang++

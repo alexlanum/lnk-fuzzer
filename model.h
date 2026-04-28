@@ -109,13 +109,13 @@ typedef struct {
  * This appears right after LinkTargetIDList if HasLinkInfo (0x02) is set in the LinkFlags.
  */
 typedef enum {
-    DRIVE_UNKNOWN       = 0x00000000,
-    DRIVE_NO_ROOT_DIR   = 0x00000001,
-    DRIVE_REMOVABLE     = 0x00000002,
-    DRIVE_FIXED         = 0x00000003,
-    DRIVE_REMOTE        = 0x00000004,
-    DRIVE_CDROM         = 0x00000005,
-    DRIVE_RAMDISK       = 0x00000006,
+    LNK_DRIVE_UNKNOWN     = 0x00000000,
+    LNK_DRIVE_NO_ROOT_DIR = 0x00000001,
+    LNK_DRIVE_REMOVABLE   = 0x00000002,
+    LNK_DRIVE_FIXED       = 0x00000003,
+    LNK_DRIVE_REMOTE      = 0x00000004,
+    LNK_DRIVE_CDROM       = 0x00000005,
+    LNK_DRIVE_RAMDISK     = 0x00000006,
     // anything beyond 0x06 is undefined by spec
 } DriveType;
 
@@ -141,74 +141,74 @@ typedef struct {
 
 typedef enum {
     // SDK values (wnnc.h / winnetwk.h) not listed in MS-SHLLINK spec
-    WNNC_NET_MSNET       = 0x00010000,
-    WNNC_NET_SMB         = 0x00020000, // aka WNNC_NET_LANMAN
-    WNNC_NET_NETWARE     = 0x00030000,
-    WNNC_NET_VINES       = 0x00040000,
-    WNNC_NET_10NET       = 0x00050000,
-    WNNC_NET_LOCUS       = 0x00060000,
-    WNNC_NET_SUN_PC_NFS  = 0x00070000,
-    WNNC_NET_LANSTEP     = 0x00080000,
-    WNNC_NET_9TILES      = 0x00090000,
-    WNNC_NET_LANTASTIC   = 0x000A0000,
-    WNNC_NET_AS400       = 0x000B0000,
-    WNNC_NET_FTP_NFS     = 0x000C0000,
-    WNNC_NET_PATHWORKS   = 0x000D0000,
-    WNNC_NET_LIFENET     = 0x000E0000,
-    WNNC_NET_POWERLAN    = 0x000F0000,
-    WNNC_NET_BWNFS       = 0x00100000,
-    WNNC_NET_COGENT      = 0x00110000,
-    WNNC_NET_FARALLON    = 0x00120000,
-    WNNC_NET_APPLETALK   = 0x00130000,
-    WNNC_NET_INTERGRAPH  = 0x00140000,
-    WNNC_NET_SYMFONET    = 0x00150000,
-    WNNC_NET_CLEARCASE   = 0x00160000,
-    WNNC_NET_FRONTIER    = 0x00170000,
-    WNNC_NET_BMC         = 0x00180000,
-    WNNC_NET_DCE         = 0x00190000,
+    LNK_WNNC_NET_MSNET       = 0x00010000,
+    LNK_WNNC_NET_SMB         = 0x00020000, // aka WNNC_NET_LANMAN
+    LNK_WNNC_NET_NETWARE     = 0x00030000,
+    LNK_WNNC_NET_VINES       = 0x00040000,
+    LNK_WNNC_NET_10NET       = 0x00050000,
+    LNK_WNNC_NET_LOCUS       = 0x00060000,
+    LNK_WNNC_NET_SUN_PC_NFS  = 0x00070000,
+    LNK_WNNC_NET_LANSTEP     = 0x00080000,
+    LNK_WNNC_NET_9TILES      = 0x00090000,
+    LNK_WNNC_NET_LANTASTIC   = 0x000A0000,
+    LNK_WNNC_NET_AS400       = 0x000B0000,
+    LNK_WNNC_NET_FTP_NFS     = 0x000C0000,
+    LNK_WNNC_NET_PATHWORKS   = 0x000D0000,
+    LNK_WNNC_NET_LIFENET     = 0x000E0000,
+    LNK_WNNC_NET_POWERLAN    = 0x000F0000,
+    LNK_WNNC_NET_BWNFS       = 0x00100000,
+    LNK_WNNC_NET_COGENT      = 0x00110000,
+    LNK_WNNC_NET_FARALLON    = 0x00120000,
+    LNK_WNNC_NET_APPLETALK   = 0x00130000,
+    LNK_WNNC_NET_INTERGRAPH  = 0x00140000,
+    LNK_WNNC_NET_SYMFONET    = 0x00150000,
+    LNK_WNNC_NET_CLEARCASE   = 0x00160000,
+    LNK_WNNC_NET_FRONTIER    = 0x00170000,
+    LNK_WNNC_NET_BMC         = 0x00180000,
+    LNK_WNNC_NET_DCE         = 0x00190000,
 
     // MS-SHLLINK spec valid values (0x001A0000 – 0x00430000)
-    WNNC_NET_AVID        = 0x001A0000,
-    WNNC_NET_DOCUSPACE   = 0x001B0000,
-    WNNC_NET_MANGOSOFT   = 0x001C0000,
-    WNNC_NET_SERNET      = 0x001D0000,
-    WNNC_NET_RIVERFRONT1 = 0x001E0000,
-    WNNC_NET_RIVERFRONT2 = 0x001F0000,
-    WNNC_NET_DECORB      = 0x00200000,
-    WNNC_NET_PROTSTOR    = 0x00210000,
-    WNNC_NET_FJ_REDIR    = 0x00220000,
-    WNNC_NET_DISTINCT    = 0x00230000,
-    WNNC_NET_TWINS       = 0x00240000,
-    WNNC_NET_RDR2SAMPLE  = 0x00250000,
-    WNNC_NET_CSC         = 0x00260000,
-    WNNC_NET_3IN1        = 0x00270000,
-    WNNC_NET_EXTENDNET   = 0x00290000,
-    WNNC_NET_STAC        = 0x002A0000,
-    WNNC_NET_FOXBAT      = 0x002B0000,
-    WNNC_NET_YAHOO       = 0x002C0000,
-    WNNC_NET_EXIFS       = 0x002D0000,
-    WNNC_NET_DAV         = 0x002E0000,
-    WNNC_NET_KNOWARE     = 0x002F0000,
-    WNNC_NET_OBJECT_DIRE = 0x00300000,
-    WNNC_NET_MASFAX      = 0x00310000,
-    WNNC_NET_HOB_NFS     = 0x00320000,
-    WNNC_NET_SHIVA       = 0x00330000,
-    WNNC_NET_IBMAL       = 0x00340000,
-    WNNC_NET_LOCK        = 0x00350000,
-    WNNC_NET_TERMSRV     = 0x00360000,
-    WNNC_NET_SRT         = 0x00370000,
-    WNNC_NET_QUINCY      = 0x00380000,
-    WNNC_NET_OPENAFS     = 0x00390000,
-    WNNC_NET_AVID1       = 0x003A0000,
-    WNNC_NET_DFS         = 0x003B0000,
-    WNNC_NET_KWNP        = 0x003C0000,
-    WNNC_NET_ZENWORKS    = 0x003D0000,
-    WNNC_NET_DRIVEONWEB  = 0x003E0000,
-    WNNC_NET_VMWARE      = 0x003F0000,
-    WNNC_NET_RSFX        = 0x00400000,
-    WNNC_NET_MFILES      = 0x00410000,
-    WNNC_NET_MS_NFS      = 0x00420000,
-    WNNC_NET_GOOGLE      = 0x00430000,
+    LNK_WNNC_NET_AVID        = 0x001A0000,
+    LNK_WNNC_NET_DOCUSPACE   = 0x001B0000,
+    LNK_WNNC_NET_MANGOSOFT   = 0x001C0000,
+    LNK_WNNC_NET_SERNET      = 0x001D0000,
+    LNK_WNNC_NET_RIVERFRONT1 = 0x001E0000,
+    LNK_WNNC_NET_RIVERFRONT2 = 0x001F0000,
+    LNK_WNNC_NET_DECORB      = 0x00200000,
+    LNK_WNNC_NET_PROTSTOR    = 0x00210000,
+    LNK_WNNC_NET_FJ_REDIR    = 0x00220000,
+    LNK_WNNC_NET_DISTINCT    = 0x00230000,
+    LNK_WNNC_NET_TWINS       = 0x00240000,
+    LNK_WNNC_NET_RDR2SAMPLE  = 0x00250000,
+    LNK_WNNC_NET_CSC         = 0x00260000,
+    LNK_WNNC_NET_3IN1        = 0x00270000,
+    LNK_WNNC_NET_EXTENDNET   = 0x00290000,
+    LNK_WNNC_NET_STAC        = 0x002A0000,
+    LNK_WNNC_NET_FOXBAT      = 0x002B0000,
+    LNK_WNNC_NET_YAHOO       = 0x002C0000,
+    LNK_WNNC_NET_EXIFS       = 0x002D0000,
+    LNK_WNNC_NET_DAV         = 0x002E0000,
+    LNK_WNNC_NET_KNOWARE     = 0x002F0000,
+    LNK_WNNC_NET_OBJECT_DIRE = 0x00300000,
+    LNK_WNNC_NET_MASFAX      = 0x00310000,
+    LNK_WNNC_NET_HOB_NFS     = 0x00320000,
+    LNK_WNNC_NET_SHIVA       = 0x00330000,
+    LNK_WNNC_NET_IBMAL       = 0x00340000,
+    LNK_WNNC_NET_LOCK        = 0x00350000,
+    LNK_WNNC_NET_TERMSRV     = 0x00360000,
+    LNK_WNNC_NET_SRT         = 0x00370000,
+    LNK_WNNC_NET_QUINCY      = 0x00380000,
+    LNK_WNNC_NET_OPENAFS     = 0x00390000,
+    LNK_WNNC_NET_AVID1       = 0x003A0000,
+    LNK_WNNC_NET_DFS         = 0x003B0000,
+    LNK_WNNC_NET_KWNP        = 0x003C0000,
+    LNK_WNNC_NET_ZENWORKS    = 0x003D0000,
+    LNK_WNNC_NET_DRIVEONWEB  = 0x003E0000,
+    LNK_WNNC_NET_VMWARE      = 0x003F0000,
+    LNK_WNNC_NET_RSFX        = 0x00400000,
+    LNK_WNNC_NET_MFILES      = 0x00410000,
+    LNK_WNNC_NET_MS_NFS      = 0x00420000,
+    LNK_WNNC_NET_GOOGLE      = 0x00430000,
     // beyond this: undefined
 } NetworkProviderType;
 
@@ -330,64 +330,64 @@ typedef struct {
 typedef enum {
     // https://github.com/libyal/libfole/blob/main/documentation/OLE%20definitions.asciidoc
     // Base types
-    VT_EMPTY            = 0x0000,
-    VT_NULL             = 0x0001,
-    VT_I2               = 0x0002,  // 2-byte signed int
-    VT_I4               = 0x0003,  // 4-byte signed int
-    VT_R4               = 0x0004,  // 4-byte real
-    VT_R8               = 0x0005,  // 8-byte real
-    VT_CY               = 0x0006,  // currency
-    VT_DATE             = 0x0007,
-    VT_BSTR             = 0x0008,  // binary string
-    VT_DISPATCH         = 0x0009,  // IDispatch pointer [COM]
-    VT_ERROR            = 0x000A,  // SCODE / HRESULT
-    VT_BOOL             = 0x000B,
-    VT_VARIANT          = 0x000C,  // nested PROPVARIANT — recursive parsing [LOOP]
-    VT_UNKNOWN          = 0x000D,  // IUnknown pointer [COM]
-    VT_DECIMAL          = 0x000E,
+    LNK_VT_EMPTY            = 0x0000,
+    LNK_VT_NULL             = 0x0001,
+    LNK_VT_I2               = 0x0002,  // 2-byte signed int
+    LNK_VT_I4               = 0x0003,  // 4-byte signed int
+    LNK_VT_R4               = 0x0004,  // 4-byte real
+    LNK_VT_R8               = 0x0005,  // 8-byte real
+    LNK_VT_CY               = 0x0006,  // currency
+    LNK_VT_DATE             = 0x0007,
+    LNK_VT_BSTR             = 0x0008,  // binary string
+    LNK_VT_DISPATCH         = 0x0009,  // IDispatch pointer [COM]
+    LNK_VT_ERROR            = 0x000A,  // SCODE / HRESULT
+    LNK_VT_BOOL             = 0x000B,
+    LNK_VT_VARIANT          = 0x000C,  // nested PROPVARIANT — recursive parsing [LOOP]
+    LNK_VT_UNKNOWN          = 0x000D,  // IUnknown pointer [COM]
+    LNK_VT_DECIMAL          = 0x000E,
     // 0x000F — unassigned gap (fuzz target)
-    VT_I1               = 0x0010,
-    VT_UI1              = 0x0011,
-    VT_UI2              = 0x0012,
-    VT_UI4              = 0x0013,
-    VT_I8               = 0x0014,
-    VT_UI8              = 0x0015,
-    VT_INT              = 0x0016,
-    VT_UINT             = 0x0017,
-    VT_VOID             = 0x0018,
-    VT_HRESULT          = 0x0019,
-    VT_PTR              = 0x001A,  // pointer type [OOB]
-    VT_SAFEARRAY        = 0x001B,  // SAFEARRAY allocation [MEM]
-    VT_CARRAY           = 0x001C,  // C-style array
-    VT_USERDEFINED      = 0x001D,
-    VT_LPSTR            = 0x001E,  // null-terminated ANSI string
-    VT_LPWSTR           = 0x001F,  // null-terminated Unicode string
+    LNK_VT_I1               = 0x0010,
+    LNK_VT_UI1              = 0x0011,
+    LNK_VT_UI2              = 0x0012,
+    LNK_VT_UI4              = 0x0013,
+    LNK_VT_I8               = 0x0014,
+    LNK_VT_UI8              = 0x0015,
+    LNK_VT_INT              = 0x0016,
+    LNK_VT_UINT             = 0x0017,
+    LNK_VT_VOID             = 0x0018,
+    LNK_VT_HRESULT          = 0x0019,
+    LNK_VT_PTR              = 0x001A,  // pointer type [OOB]
+    LNK_VT_SAFEARRAY        = 0x001B,  // SAFEARRAY allocation [MEM]
+    LNK_VT_CARRAY           = 0x001C,  // C-style array
+    LNK_VT_USERDEFINED      = 0x001D,
+    LNK_VT_LPSTR            = 0x001E,  // null-terminated ANSI string
+    LNK_VT_LPWSTR           = 0x001F,  // null-terminated Unicode string
     // 0x0020-0x0023 — unassigned gap (fuzz targets)
-    VT_RECORD           = 0x0024,
-    VT_INT_PTR          = 0x0025,
-    VT_UINT_PTR         = 0x0026,
+    LNK_VT_RECORD           = 0x0024,
+    LNK_VT_INT_PTR          = 0x0025,
+    LNK_VT_UINT_PTR         = 0x0026,
     // 0x0027-0x003F — unassigned gap (fuzz targets)
-    VT_FILETIME         = 0x0040,
-    VT_BLOB             = 0x0041,  // size-prefixed blob [MEM]
-    VT_STREAM           = 0x0042,  // IStream creation [COM]
-    VT_STORAGE          = 0x0043,  // IStorage creation [COM]
-    VT_STREAMED_OBJECT  = 0x0044,  // [COM]
-    VT_STORED_OBJECT    = 0x0045,  // [COM]
-    VT_BLOB_OBJECT      = 0x0046,
-    VT_CF               = 0x0047,  // clipboard format
-    VT_CLSID            = 0x0048,  // CLSID [COM]
-    VT_VERSIONED_STREAM = 0x0049,  // versioned IStream [COM]
+    LNK_VT_FILETIME         = 0x0040,
+    LNK_VT_BLOB             = 0x0041,  // size-prefixed blob [MEM]
+    LNK_VT_STREAM           = 0x0042,  // IStream creation [COM]
+    LNK_VT_STORAGE          = 0x0043,  // IStorage creation [COM]
+    LNK_VT_STREAMED_OBJECT  = 0x0044,  // [COM]
+    LNK_VT_STORED_OBJECT    = 0x0045,  // [COM]
+    LNK_VT_BLOB_OBJECT      = 0x0046,
+    LNK_VT_CF               = 0x0047,  // clipboard format
+    LNK_VT_CLSID            = 0x0048,  // CLSID [COM]
+    LNK_VT_VERSIONED_STREAM = 0x0049,  // versioned IStream [COM]
     // 0x004A-0x0FFE — unassigned gap
 
     // Modifier flags — combined with base types via bitwise OR, not standalone values
-    VT_VECTOR           = 0x1000,  // VT_VECTOR | base_type — count-prefixed array [LOOP][MEM]
-    VT_ARRAY            = 0x2000,  // VT_ARRAY  | base_type — SAFEARRAY [MEM]
-    VT_BYREF            = 0x4000,  // VT_BYREF  | base_type — pointer to value [OOB]
-    VT_RESERVED         = 0x8000,  // reserved, MUST NOT appear — fuzz target
+    LNK_VT_VECTOR           = 0x1000,  // LNK_VT_VECTOR | base_type — count-prefixed array [LOOP][MEM]
+    LNK_VT_ARRAY            = 0x2000,  // LNK_VT_ARRAY  | base_type — SAFEARRAY [MEM]
+    LNK_VT_BYREF            = 0x4000,  // LNK_VT_BYREF  | base_type — pointer to value [OOB]
+    LNK_VT_RESERVED         = 0x8000,  // reserved, MUST NOT appear — fuzz target
 
     // Masks and sentinels — not type values, used for extracting/checking type fields
-    VT_TYPEMASK         = 0x0FFF,  // mask to extract base type: vt & VT_TYPEMASK
-    VT_ILLEGAL          = 0xFFFF,  // sentinel: invalid/illegal type value
+    LNK_VT_TYPEMASK         = 0x0FFF,  // mask to extract base type: vt & LNK_VT_TYPEMASK
+    LNK_VT_ILLEGAL          = 0xFFFF,  // sentinel: invalid/illegal type value
 } PropVarType;
 
 static const uint8_t FMTID_STRING_NAMED[16] = {
