@@ -35,11 +35,11 @@ extern "C" {
 // Upper bound on serialized .lnk size. The format's offset fields are
 // 32-bit but practical samples are well under 1 MB; this gives generous
 // headroom without pinning huge per-thread buffers.
-static constexpr size_t LNK_MAX_BYTES = 1 << 20;  // 1 MiB
+static constexpr size_t LNK_MAX_BYTES = 1 << 20; // 1 MiB
 
 class LNKMutator : public Mutator {
 public:
-    LNKMutator() : last_op_(-1), initialized_(false) {
+    LNKMutator() : last_op_(-1), initialized_(false){
         std::memset(&state_, 0, sizeof(state_));
         std::memset(&layout_, 0, sizeof(layout_));
         buf_.resize(LNK_MAX_BYTES);
@@ -55,7 +55,7 @@ public:
     void InitRound(Sample* input_sample, MutatorSampleContext* /*context*/) override {
         // Sample::bytes is char*; our deserialize takes uint8_t*. Cast.
         const uint8_t* bytes = reinterpret_cast<const uint8_t*>(input_sample->bytes);
-        if (deserialize_lnk(bytes, input_sample->size, &state_) < 0) {
+        if(deserialize_lnk(bytes, input_sample->size, &state_) < 0){
             // Malformed seed (shouldn't happen for queue samples — they
             // round-tripped successfully when added). Skip this round.
             initialized_ = false;
@@ -69,7 +69,7 @@ public:
     // per round before moving to the next seed.
     bool Mutate(Sample* inout_sample, PRNG* prng,
                 std::vector<Sample*>& /*all_samples*/) override {
-        if (!initialized_) return false;
+        if(!initialized_) return false;
 
         // Recover our generator state from Jackalope's PRNG*. Safe
         // because LNKFuzzer::CreatePRNG is the only constructor of
@@ -77,13 +77,13 @@ public:
         LNKRand* rng = static_cast<LNKPRNG*>(prng)->state();
 
         last_op_ = mutate_apply(rng, &state_, &layout_);
-        if (last_op_ < 0) {
+        if(last_op_ < 0){
             // No applicable operator (every precondition failed).
             return false;
         }
 
         size_t out_len = 0;
-        if (serialize_lnk(buf_.data(), buf_.size(), &out_len, &state_) < 0) {
+        if(serialize_lnk(buf_.data(), buf_.size(), &out_len, &state_) < 0){
             // Serialization failed (oversize, internal inconsistency).
             // Don't ship a torn buffer.
             return false;
@@ -97,7 +97,7 @@ public:
     // Called after the target runs on the mutated sample. has_new_coverage
     // is the signal we feed back to the scheduler's Beta posteriors.
     void NotifyResult(RunResult /*result*/, bool has_new_coverage) override {
-        if (last_op_ >= 0) {
+        if(last_op_ >= 0){
             mutate_report(static_cast<MutationOperator>(last_op_),
                           has_new_coverage ? 1 : 0);
             last_op_ = -1;  // consume; one report per Mutate() call
@@ -114,6 +114,6 @@ private:
 
 // Factory used by lnk_fuzzer_main.cc. Defined here so that file doesn't
 // need to know LNKMutator's class definition.
-Mutator* CreateLNKMutator() {
+Mutator* CreateLNKMutator(){
     return new LNKMutator();
 }
