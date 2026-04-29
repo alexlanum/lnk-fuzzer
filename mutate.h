@@ -159,15 +159,22 @@ typedef enum {
 LNKLayout mutate_extract_layout(LNKGeneratorState* state);
 
 /**
- * Initialize scheduler (call once per worker thread).
- * `rng` is the per-thread PRNG that will be used for both seeding
- * and all subsequent sampling. Caller owns the LNKRand storage.
+ * Initialize scheduler arrays + the mutex protecting them.
+ * Call ONCE at startup, before any worker thread enters the fuzzing loop.
+ *
+ * PRNG seeding is no longer this function's responsibility — it happens
+ * per-thread in LNKPRNG's constructor via lnk_rand_seed.
  */
-void mutate_scheduler_init(LNKRand* rng, uint64_t seed);
+void mutate_scheduler_init(void);
 
 /**
- * Choose a mutation operator, apply it, ret which was used.
- * Pass the same `rng` used for mutate_scheduler_init.
+ * Choose a mutation operator, apply it, return which was used.
+ * Thread-safe: snapshots the scheduler arrays under a mutex, then samples
+ * and mutates without holding the lock. Multiple worker threads may call
+ * this concurrently.
+ *
+ * `rng` must be the per-thread PRNG (one LNKRand per worker thread, owned
+ * by the LNKPRNG instance Jackalope created via CreatePRNG).
  */
 MutationOperator mutate_apply(LNKRand* rng, LNKGeneratorState* state, LNKLayout* layout);
 

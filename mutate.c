@@ -10,6 +10,26 @@
 #include <math.h>
 #include "clsids.h"
 
+/**
+ * Mutex protecting the shared scheduler arrays.
+ * CRITICAL_SECTION is the fast in-proc mutex on Windows
+ * (~50-100 ns per lock/unlock pair, no kernel transition
+ * for the uncontended case). This matches Jackalope's
+ * mutex.h pattern. See usage in mutate_apply / mutate_report.
+ */
+#if defined(_WIN32) || defined(WIN32) || defined(__WIN32)
+    #define WIN32_LEAN_AND_MEAN
+    #include <windows.h>
+    static CRITICAL_SECTION scheduler_mutex;
+    static inline void scheduler_lock(void)   { EnterCriticalSection(&scheduler_mutex); }
+    static inline void scheduler_unlock(void) { LeaveCriticalSection(&scheduler_mutex); }
+#else
+    #include <pthread.h>
+    static pthread_mutex_t scheduler_mutex = PTHREAD_MUTEX_INITIALIZER;
+    static inline void scheduler_lock(void)   { pthread_mutex_lock(&scheduler_mutex); }
+    static inline void scheduler_unlock(void) { pthread_mutex_unlock(&scheduler_mutex); }
+#endif
+
 
 /**
  * Scheduler state — Thompson Sampling
@@ -2569,8 +2589,16 @@ static void op_apply(LNKRand* rng, MutationOperator op, LNKGeneratorState* state
 
 // called once per LnkMutator (i.e., once per worker thread).
 // seed comes from the caller — LnkMutator's ctor decides policy.
-void mutate_scheduler_init(LNKRand* rng, uint64_t seed){
-    lnk_rand_seed(rng, seed);
+// Called once at startup, from main() before fuzzer->Run().
+// PRNG seeding has moved into LNKPRNG's constructor; this function now
+// only initializes the shared scheduler state and the mutex that protects
+// it. Calling more than once is harmless on POSIX (re-zeros the prior)
+// but undefined on Windows (InitializeCriticalSection isn't idempotent).
+void mutate_scheduler_init(void){
+#if defined(_WIN32) || defined(WIN32) || defined(__WIN32)
+    InitializeCriticalSection(&scheduler_mutex);
+#endif
+    // POSIX: PTHREAD_MUTEX_INITIALIZER above; nothing to do at runtime.
 
     // Beta(1, 1) = uniform prior. no belief about any arm's rate yet.
     for(int g = 0; g < GROUP_COUNT; g++){
@@ -2584,10 +2612,14 @@ void mutate_scheduler_init(LNKRand* rng, uint64_t seed){
 }
 
 // called by LNKMutator::NotifyResult after Jackalope reports whether the last
-// iteration produced new coverage
+// iteration produced new coverage.
+// Lock window is just the four increments — single-digit nanoseconds of work
+// inside the critical section.
 void mutate_report(MutationOperator op, int new_cov){
     if(op < 0 || op >= MUTATE_COUNT) return;
     MutationOperatorGroup g = op_to_group[op];
+
+    scheduler_lock();
     if(new_cov){
         op_alpha[op]   += 1.0;
         group_alpha[g] += 1.0;
@@ -2595,22 +2627,46 @@ void mutate_report(MutationOperator op, int new_cov){
         op_beta[op]   += 1.0;
         group_beta[g] += 1.0;
     }
+    scheduler_unlock();
 }
 
 MutationOperator mutate_apply(LNKRand* rng, LNKGeneratorState* state, LNKLayout* layout){
+    // Snapshot the shared scheduler arrays under the lock so the rest of
+    // the function can sample/decide/mutate without holding it. The lock
+    // window is four memcpys — sub-microsecond — vs holding through
+    // op_apply, which runs the actual operator and dwarfs the sampling.
+    //
+    // Effect on the algorithm: two threads racing this path may sample
+    // from very-slightly-stale snapshots if mutate_report is also running,
+    // but Thompson Sampling is robust to that — staleness on the order of
+    // a single update doesn't change which arm wins. The pattern preserves
+    // shared learning (every thread's mutate_report still updates the
+    // global posterior) while keeping the hot path lock-free.
+    double local_group_alpha[GROUP_COUNT];
+    double local_group_beta [GROUP_COUNT];
+    double local_op_alpha   [MUTATE_COUNT];
+    double local_op_beta    [MUTATE_COUNT];
+
+    scheduler_lock();
+    memcpy(local_group_alpha, group_alpha, sizeof(group_alpha));
+    memcpy(local_group_beta,  group_beta,  sizeof(group_beta));
+    memcpy(local_op_alpha,    op_alpha,    sizeof(op_alpha));
+    memcpy(local_op_beta,     op_beta,     sizeof(op_beta));
+    scheduler_unlock();
+
     // Lvl 1: Select a group using Thompson Sampling
     // for k = 1..K, sample θ̂_k ~ Beta(α_k, β_k)
     // K = groups
     double best_score = -1.0;
     MutationOperatorGroup chosen_group = 0;
     for(int g = 0; g < GROUP_COUNT; g++){
-        double theta = sample_beta(rng, group_alpha[g], group_beta[g]);
+        double theta = sample_beta(rng, local_group_alpha[g], local_group_beta[g]);
         if(theta > best_score){
             best_score = theta;
             chosen_group = g;
         }
     }
-    
+
     // Lvl 2: Collect valid operators within the group
     MutationOperator candidates[MUTATE_COUNT];
     int count = 0;
@@ -2635,14 +2691,15 @@ MutationOperator mutate_apply(LNKRand* rng, LNKGeneratorState* state, LNKLayout*
     best_score = -1.0;
     MutationOperator chosen_op = candidates[0];
     for(int i = 0; i < count; i++){
-        double s = sample_beta(rng, op_alpha[candidates[i]], op_beta[candidates[i]]);
+        double s = sample_beta(rng, local_op_alpha[candidates[i]], local_op_beta[candidates[i]]);
         if(s > best_score){
             best_score = s;
             chosen_op = candidates[i];
         }
     }
 
-    // apply mutation
+    // apply mutation. No lock — op_apply touches per-thread state/layout
+    // and the per-thread rng, never the shared scheduler arrays.
     op_apply(rng, chosen_op, state, layout);
 
     return chosen_op;

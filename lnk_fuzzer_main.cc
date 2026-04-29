@@ -22,6 +22,10 @@
 
 #include "lnk_prng_jackalope.h"
 
+extern "C" {
+    #include "mutate.h"  // mutate_scheduler_init
+}
+
 #include <cstdint>
 #include <ctime>
 
@@ -54,6 +58,11 @@ public:
 };
 
 int main(int argc, char** argv) {
+    // Initialize the Thompson Sampling scheduler arrays + the mutex
+    // protecting them. Must happen before any worker thread is spawned
+    // (Run() spawns -nthreads workers, each of which calls Mutate()).
+    mutate_scheduler_init();
+
     Fuzzer* fuzzer = new LNKFuzzer();
     fuzzer->Run(argc, argv);
     return 0;
