@@ -36,8 +36,7 @@ extern Mutator* CreateLNKMutator();
 class LNKFuzzer : public Fuzzer {
 public:
     // Required override (CreateMutator is pure-virtual on Fuzzer).
-    Mutator* CreateMutator(int /*argc*/, char** /*argv*/,
-                           ThreadContext* /*tc*/) override {
+    Mutator* CreateMutator(int /*argc*/, char** /*argv*/, ThreadContext* /*tc*/) override {
         return CreateLNKMutator();
     }
 
@@ -51,8 +50,7 @@ public:
         uint32_t base = (user_seed != 0)
                         ? static_cast<uint32_t>(user_seed)
                         : static_cast<uint32_t>(std::time(nullptr));
-        uint32_t seed = base ^ static_cast<uint32_t>(
-                            tc->thread_id * 0x9e3779b9u);
+        uint32_t seed = base ^ static_cast<uint32_t>(tc->thread_id * 0x9e3779b9u);
         return new LNKPRNG(seed);
     }
 };
