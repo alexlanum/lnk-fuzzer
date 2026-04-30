@@ -300,11 +300,20 @@ typedef enum {
     EXTRA_SPECIAL_FOLDER,
     EXTRA_TRACKER,
     EXTRA_VISTA_IDLIST,
-    EXTRA_TERMINATOR
+    EXTRA_UNKNOWN,    // recognized as a block but signature is not in the spec table.
+                      // serializer writes the original 32-bit signature back via the
+                      // `signature` field on ExtraDataBlock — do NOT reuse this enum
+                      // value to mean "terminator".
+    EXTRA_TERMINATOR  // size-zero terminator block. only set by the mutator when it wants
+                      // to inject one; deserialize.c does NOT classify unknown signatures
+                      // here anymore — they get EXTRA_UNKNOWN with `signature` preserved.
 } ExtraDataType;
 
 typedef struct {
     uint32_t      size;
+    uint32_t      signature; // raw 32-bit BlockSignature as read from the file. always populated by
+                             // deserialize, used by serialize so unrecognized signatures roundtrip
+                             // correctly instead of collapsing to zero.
     ExtraDataType type;
     uint8_t*      data; // raw bytes after signature
     /**

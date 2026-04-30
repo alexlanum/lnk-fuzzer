@@ -30,7 +30,6 @@
     static inline void scheduler_unlock(void) { pthread_mutex_unlock(&scheduler_mutex); }
 #endif
 
-
 /**
  * Scheduler state — Thompson Sampling
  * Each operator and operator group maintain a Beta distribution
@@ -1467,55 +1466,87 @@ static void apply_extra_hdr(LNKRand* rng, MutationOperator op, LNKGeneratorState
             // unrecognized signature, IsValidDataBlock rejects the block
             // tests if rejection path correctly skips the abID[] payload bytes
             // or if the parser gets confused abt where the next block starts
+            //
+            // EXTRA_UNKNOWN + an explicit non-spec signature on `block->signature` is the
+            // post-fix shape: the serializer writes the signature we put here verbatim, so
+            // the mutator gets to choose what bytes the parser sees instead of relying on
+            // a placeholder constant. We pick a value in the 0xA0000xxx family (the same
+            // prefix Microsoft reserves for ExtraData signatures) so the parser exercises
+            // its "looks like one of ours but isn't" rejection path rather than its
+            // "obviously garbage" path.
             int r = lnk_rand(rng) % 100;
-            if(r < 40)
-                block->type = EXTRA_TERMINATOR; // maps to unknown signature in serializer
-            else if(r < 70)
-                block->type = lnk_rand(rng) % 12;      // random type from the enum, might collide with real type
-            else{
-                block->type = EXTRA_TERMINATOR; // unknown signature
-                block->size = 8;                // but valid size
+            block->type = EXTRA_UNKNOWN;
+            if(r < 40){
+                // unrecognized but well-formed — random low byte avoiding 0x01..0x0C
+                uint8_t low;
+                do { low = (uint8_t)(lnk_rand(rng) & 0xFF); } while (low >= 0x01 && low <= 0x0C);
+                block->signature = 0xA0000000u | low;
+            } else if(r < 70){
+                // collide with a real type by stealing its signature but tagging type wrong.
+                // exercises the type-vs-signature confusion path.
+                uint32_t real_sigs[] = {
+                    0xA0000001, 0xA0000002, 0xA0000003, 0xA0000004, 0xA0000005, 0xA0000006,
+                    0xA0000007, 0xA0000008, 0xA0000009, 0xA000000B, 0xA000000C
+                };
+                block->signature = real_sigs[lnk_rand(rng) % 11];
+            } else{
+                // unknown signature with valid 8-byte size (just header, no payload)
+                block->signature = 0xA00000FF;
+                block->size = 8;
             }
             break;
         }
 
         case MUTATE_BLOCK_SIGNATURE_WRONG:{
-            // valid signature paired with wrong block type
-            // 
+            // signature emitted on disk no longer matches the block's payload class
+            //
             // example:
-            //   swapping payload type to PropertyStore while having a 0xA0000003 BlockSignature
-            //   causes SHFindDataBlock to find and return a PropertyStore payload to CTracker::Load.
-            //   at this point. CTracker::Load reads fields under wrong assumptions.
+            //   payload bytes look like a Tracker block, but BlockSignature on disk says
+            //   PropertyStore (0xA0000009). SHFindDataBlock returns the bytes to the
+            //   PropertyStore handler, which reads fields under wrong assumptions.
+            //
+            // Important: deserialize now preserves the raw 32-bit signature in
+            // block->signature, and serialize prefers it over the type→sig table.
+            // To flip the emitted signature we have to update `signature` directly,
+            // not just `type`. The pairs below walk ExtraDataType + on-disk sig in lockstep.
+            static const struct { ExtraDataType type; uint32_t sig; } kKnown[] = {
+                { EXTRA_ENVIRONMENT,      0xA0000001 },
+                { EXTRA_CONSOLE,          0xA0000002 },
+                { EXTRA_TRACKER,          0xA0000003 },
+                { EXTRA_CONSOLE_FE,       0xA0000004 },
+                { EXTRA_SPECIAL_FOLDER,   0xA0000005 },
+                { EXTRA_DARWIN,           0xA0000006 },
+                { EXTRA_ICON_ENVIRONMENT, 0xA0000007 },
+                { EXTRA_SHIM,             0xA0000008 },
+                { EXTRA_PROPERTY_STORE,   0xA0000009 },
+                { EXTRA_KNOWN_FOLDER,     0xA000000B },
+                { EXTRA_VISTA_IDLIST,     0xA000000C },
+            };
+            const int kKnownCount = (int)(sizeof(kKnown) / sizeof(kKnown[0]));
 
             if(extra->block_count == 1){
-                // only one ExtraData block.
-                // can't swap with another, so change its type
-                // to a different known type. the block's payload
-                // stays the same, but the serializer writes a dif
-                // signature. the handler for the new signature is
-                // given the original block's payload.
-                ExtraDataType types[] = {
-                    EXTRA_ENVIRONMENT, EXTRA_CONSOLE, EXTRA_TRACKER,
-                    EXTRA_CONSOLE_FE, EXTRA_SPECIAL_FOLDER, EXTRA_DARWIN,
-                    EXTRA_ICON_ENVIRONMENT, EXTRA_PROPERTY_STORE,
-                    EXTRA_KNOWN_FOLDER, EXTRA_VISTA_IDLIST, EXTRA_SHIM,
-                };
-                ExtraDataType new_type;
+                // single block: pick a known type different from the current one and
+                // adopt its (type, signature) pair. Payload stays untouched on purpose —
+                // that is the whole point of the mutation.
+                int pick;
                 do{
-                    new_type = types[lnk_rand(rng) % 11];
-                } while(new_type == block->type); // ensure different type
-                block->type = new_type;
+                    pick = lnk_rand(rng) % kKnownCount;
+                } while(kKnown[pick].type == block->type);
+                block->type = kKnown[pick].type;
+                block->signature = kKnown[pick].sig;
             } else{
-                // two or more ExtraData blocks.
-                // swap types between two blocks.
-                // both handlers get each other's payloads.
+                // two or more blocks: swap (type, signature) pairs between two indices.
+                // both handlers end up reading each other's payloads.
                 int other;
                 do{
                     other = lnk_rand(rng) % extra->block_count;
-                } while(other == idx); // ensure different block index
-                ExtraDataType tmp = block->type;
-                block->type = extra->blocks[other].type;
-                extra->blocks[other].type = tmp;
+                } while(other == idx);
+                ExtraDataType tmp_type = block->type;
+                uint32_t      tmp_sig  = block->signature;
+                block->type      = extra->blocks[other].type;
+                block->signature = extra->blocks[other].signature;
+                extra->blocks[other].type      = tmp_type;
+                extra->blocks[other].signature = tmp_sig;
             }
             break;
         }

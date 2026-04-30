@@ -142,11 +142,18 @@ static int deserialize_idlist(const uint8_t* buf, size_t len, size_t* off, LinkT
         // This raw copy serves two purposes: the serializer can write
         // it back directly, and the mutator can mutate items it doesn't
         // fully understand (IDTYPE_UNKNOWN) by operating on raw bytes.
+        //
+        // Bound the copy by `end` (the IDList terminator boundary), not by `len`
+        // (the whole buffer). A `cb` that extends past the IDList terminator into
+        // the LinkInfo region would otherwise pull foreign bytes into the item's
+        // raw payload and the mutator would treat them as legitimate SHITEMID
+        // content. Mutators that want to test "item claims to be huge" should do
+        // it via the cb field directly, not via opportunistic byte capture.
         item->raw_len = cb;
         item->raw = malloc(cb);
         if(!item->raw) return -1;
         // go back 2 bytes to where cb was, because u already read those
-        if(*off - 2 + cb > len) return -1;
+        if(*off - 2 + cb > end || *off - 2 + cb > len) return -1;
         memcpy(item->raw, buf + *off - 2, cb);
 
         // read the class type (first byte of payload)
@@ -666,11 +673,18 @@ static int deserialize_extradata(const uint8_t* buf, size_t len, size_t* off, LN
     ExtraDataState* extradata = &state->extradata;
 
     // Blocks are passed to SHReadDataBlockList, which selectively handles all block signatures and size parsing.
+    extradata->has_terminator = 0;
     while(*off + 4 <= len){ // prevent reading past EOF
         // DWORD BlockSize
         uint32_t block_size;
         TRY(read_u32(buf, len, off, &block_size));
-        if(block_size < 8) break; // terminator or invalid
+        if(block_size < 8){
+            // real terminator (size 0) or malformed-but-loop-ending size (1..7).
+            // SHReadDataBlockList stops in either case. Record that we saw it so the
+            // serializer doesn't have to assume.
+            extradata->has_terminator = 1;
+            break;
+        }
         if(extradata->block_count >= MAX_EXTRA_DATA_BLOCKS) return -1; // invalid range
 
         // DWORD BlockSignature
@@ -681,8 +695,12 @@ static int deserialize_extradata(const uint8_t* buf, size_t len, size_t* off, LN
         uint32_t payload_len = block_size - 8; // minus size and signature
         ExtraDataBlock* block = &extradata->blocks[extradata->block_count];
         block->size = block_size;
+        block->signature = block_signature; // preserve raw sig so serialize roundtrips unknowns
 
-        // BlockSignature type classification
+        // BlockSignature type classification.
+        // Unknown signatures get EXTRA_UNKNOWN, NOT EXTRA_TERMINATOR. Terminator is reserved
+        // for size-zero blocks the mutator injects via apply_extra_seq; conflating the two
+        // would cause the serializer to drop the signature on roundtrip.
         switch(block_signature){
             case 0xA0000001: block->type = EXTRA_ENVIRONMENT;      break;
             case 0xA0000002: block->type = EXTRA_CONSOLE;          break;
@@ -695,7 +713,7 @@ static int deserialize_extradata(const uint8_t* buf, size_t len, size_t* off, LN
             case 0xA0000005: block->type = EXTRA_SPECIAL_FOLDER;   break;
             case 0xA0000003: block->type = EXTRA_TRACKER;          break;
             case 0xA000000C: block->type = EXTRA_VISTA_IDLIST;     break;
-            default:         block->type = EXTRA_TERMINATOR;       break;
+            default:         block->type = EXTRA_UNKNOWN;          break;
         }
 
         // Store the raw payload which comes after BlockSignature
@@ -733,9 +751,10 @@ static int deserialize_extradata(const uint8_t* buf, size_t len, size_t* off, LN
     if((extradata->block_count > 0))
         layout->has_extradata = 1;
 
-    // valid LNK files always have a terminator (< 8 block that breaks the while loop)
-    extradata->has_terminator = 1;
-    
+    // has_terminator is set inside the loop only when we actually see a size<8 block.
+    // Do NOT unconditionally set it here — running out of buffer mid-walk is a different
+    // condition and the serializer needs to distinguish them (so it doesn't synthesize
+    // a phantom terminator on a sample that was truncated mid-block).
     return 0;
 }
 

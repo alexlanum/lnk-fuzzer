@@ -274,21 +274,29 @@ static int serialize_extradata(uint8_t* buf, size_t cap, size_t* off, const Extr
         // BlockSize
         TRY(write_u32(buf, cap, off, block->size));
 
-        // BlockSignature
-        uint32_t sig;
-        switch(block->type){
-            case EXTRA_ENVIRONMENT:      sig = 0xA0000001; break;
-            case EXTRA_CONSOLE:          sig = 0xA0000002; break;
-            case EXTRA_TRACKER:          sig = 0xA0000003; break;
-            case EXTRA_CONSOLE_FE:       sig = 0xA0000004; break;
-            case EXTRA_SPECIAL_FOLDER:   sig = 0xA0000005; break;
-            case EXTRA_DARWIN:           sig = 0xA0000006; break;
-            case EXTRA_ICON_ENVIRONMENT: sig = 0xA0000007; break;
-            case EXTRA_SHIM:             sig = 0xA0000008; break;
-            case EXTRA_PROPERTY_STORE:   sig = 0xA0000009; break;
-            case EXTRA_KNOWN_FOLDER:     sig = 0xA000000B; break;
-            case EXTRA_VISTA_IDLIST:     sig = 0xA000000C; break;
-            default:                     sig = 0x00000000; break;
+        // BlockSignature.
+        // Prefer the raw signature deserialize captured (preserves unknown sigs across
+        // a roundtrip). Fall back to the type→sig table only when `signature` is zero —
+        // that path covers blocks the mutator constructs from scratch without populating
+        // the field.
+        uint32_t sig = block->signature;
+        if(sig == 0){
+            switch(block->type){
+                case EXTRA_ENVIRONMENT:      sig = 0xA0000001; break;
+                case EXTRA_CONSOLE:          sig = 0xA0000002; break;
+                case EXTRA_TRACKER:          sig = 0xA0000003; break;
+                case EXTRA_CONSOLE_FE:       sig = 0xA0000004; break;
+                case EXTRA_SPECIAL_FOLDER:   sig = 0xA0000005; break;
+                case EXTRA_DARWIN:           sig = 0xA0000006; break;
+                case EXTRA_ICON_ENVIRONMENT: sig = 0xA0000007; break;
+                case EXTRA_SHIM:             sig = 0xA0000008; break;
+                case EXTRA_PROPERTY_STORE:   sig = 0xA0000009; break;
+                case EXTRA_KNOWN_FOLDER:     sig = 0xA000000B; break;
+                case EXTRA_VISTA_IDLIST:     sig = 0xA000000C; break;
+                case EXTRA_UNKNOWN:          sig = 0xA00000FF; break; // placeholder unrecognized sig
+                case EXTRA_TERMINATOR:       sig = 0x00000000; break; // shouldn't reach here for size>=8 blocks
+                default:                     sig = 0x00000000; break;
+            }
         }
         TRY(write_u32(buf, cap, off, sig));
 

@@ -1,12 +1,55 @@
-# clangd config — tells the language server how to parse our C/C++ files.
-# Mirrors the include paths the actual build (CMake) will use:
-#   * "."        — our own headers (model.h, mutate.h, lnk_prng.h, etc.)
-#   * "Jackalope" — Jackalope's headers; needed because Jackalope's own
-#                   files include each other with bare names like #include "sample.h"
+# clangd config — tells the language server how to parse our files.
+#
+# The earlier version of this file forced clang++ + -std=c++17 globally, which made clangd
+# parse our C files (mutate.c, deserialize.c, serialize.c, gen.c, lnk_prng.c) through the
+# C++ frontend. That produces a wave of false-positive diagnostics:
+#   * malloc/calloc returning void* doesn't implicitly convert in C++ (~9 hits in mutate.c)
+#   * designated initializers like [MUTATE_FLAG_SINGLE_BIT] = GROUP_FLAGS are C99-only
+#   * mixed declarations + statements inside switch cases are flagged
+# None of these are real build errors — they only show up because the wrong language was
+# selected. The blocks below scope flags per-file-pattern so .c uses the C frontend and
+# .cc/.cpp/.h use the C++ frontend.
+#
+# Mirrors the include paths the actual build (CMake) uses:
+#   * "."         — our own headers (model.h, mutate.h, lnk_prng.h, etc.)
+#   * "Jackalope" — Jackalope's headers; Jackalope's own files include each other with bare
+#                   names like #include "sample.h", so the path has to be on the include list.
+
+# Default flags applied to every translation unit. Include paths only — no language flag here.
 CompileFlags:
   Add:
     - -I.
     - -IJackalope
+
+---
+# C sources — parse as C11 (designated initializers, implicit void* conversion, etc.).
+If:
+  PathMatch: .*\.c
+CompileFlags:
+  Add:
+    - -xc
+    - -std=c11
+  Compiler: clang
+
+---
+# C++ sources — Jackalope is C++17, our glue (.cc) and harnesses (.cpp) match.
+If:
+  PathMatch: .*\.(cc|cpp|cxx)
+CompileFlags:
+  Add:
+    - -xc++
     - -std=c++17
-  # Treat .cc files explicitly as C++ even if extension detection wavers.
+  Compiler: clang++
+
+---
+# Headers are ambiguous — could be included from C or C++. Default to C++ so Jackalope's
+# headers (which use namespaces, classes, etc.) parse correctly. C-only headers like model.h
+# and mutate.h are written to be C++-clean (extern "C" guards in mutate.h, plain C types
+# in model.h), so this works for both.
+If:
+  PathMatch: .*\.h
+CompileFlags:
+  Add:
+    - -xc++
+    - -std=c++17
   Compiler: clang++
