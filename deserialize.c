@@ -183,6 +183,12 @@ static int deserialize_idlist(const uint8_t* buf, size_t len, size_t* off, LinkT
         pidl->item_count++; // move to next item, repeats until terminator or end of IDList
     }
 
+    // Advance past the entire IDList payload regardless of how the loop exited
+    // (real terminator, MAX_PIDL_ITEMS hit, partial item, ran out of bytes). Without this,
+    // any early break leaves *off short of the LinkInfo start and every later section reads
+    // from the wrong place — a desync that masquerades as random parser flakiness.
+    if(end > len) end = len; // clamp; the outer caller already validated buf bounds
+    *off = end;
     return 0;
 }
 
@@ -194,6 +200,10 @@ static int deserialize_linkinfo(const uint8_t* buf, size_t len, size_t* off, Lin
 
     TRY(read_u32(buf, len, off, &info->link_info_size));
     if(info->link_info_size < 0x1C) return -1; // LinkInfoSize must be minimum 28 bytes
+    // LinkInfoSize must also fit within the remaining buffer. Without this, every
+    // subsequent memchr/memcpy keyed off (linkinfo_start + link_info_size) can OOB-read
+    // past the buffer end if a mutator inflates LinkInfoSize.
+    if(info->link_info_size > len - linkinfo_start) return -1;
     TRY(read_u32(buf, len, off, &info->link_info_header_size));
 
     // LinkInfoFlags:
@@ -279,12 +289,15 @@ static int deserialize_linkinfo(const uint8_t* buf, size_t len, size_t* off, Lin
         memcpy(info->local_base_path, buf + lbp_offset, max_bytes);
     }
 
-    // CommonPathSuffix (ANSI, always present)
+    // CommonPathSuffix (ANSI, always present).
+    // Bound the offset before computing buf-relative pointers — otherwise an offset
+    // >= link_info_size makes (link_info_size - offset) underflow size_t and the
+    // subsequent memchr reads from buf + cps_offset which is OOB.
+    if(info->common_path_suffix_offset >= info->link_info_size) return -1;
     size_t cps_offset = linkinfo_start + info->common_path_suffix_offset;
     size_t max_bytes = linkinfo_start + info->link_info_size - cps_offset;
     if(max_bytes > sizeof(info->common_path_suffix))
         max_bytes = sizeof(info->common_path_suffix);
-    if(info->common_path_suffix_offset >= info->link_info_size) return -1;
     if(!memchr(buf + cps_offset, '\0', max_bytes)) return -1;
     memcpy(info->common_path_suffix, buf + cps_offset, max_bytes);
 
@@ -658,7 +671,7 @@ static int deserialize_extradata(const uint8_t* buf, size_t len, size_t* off, LN
         uint32_t block_size;
         TRY(read_u32(buf, len, off, &block_size));
         if(block_size < 8) break; // terminator or invalid
-        if(extradata->block_count > MAX_EXTRA_DATA_BLOCKS) return -1; // invalid range
+        if(extradata->block_count >= MAX_EXTRA_DATA_BLOCKS) return -1; // invalid range
 
         // DWORD BlockSignature
         uint32_t block_signature;

@@ -7,16 +7,23 @@
  * (SHMSampleDelivery, format: [uint32 len][bytes]) and feeds it to the
  * Windows Shell Link parsing path.
  * 
- * IPersistStream::Load   – top level structure parse from the byte stream
- * IShellLinkW::Resolve   – target resolution (LinkInfo path building, working directory normalization, icon load)
- * IShellLinkW::GetIDList – force LinkTargetIDList through full PIDL traversal: SHITEMID dispatch by class type byte (CVE-2010-2568, CVE-2017-8464 CControlPanelFolder attack surface)
- * IShellLinkW::GetPath   – CommonNetworkRelativeLink path construction (CVE-2015-0096 attack surface)
- * IShellLink::GetIconLocation – paths that resolve icon from CPL
+ * IPersistStream::Load                    – top level structure parse from the byte stream
+ * IShellLinkW::Resolve                    – target resolution (LinkInfo path building, working directory normalization, icon load)
+ * IShellLinkW::GetIDList                  – force LinkTargetIDList through full PIDL traversal: SHITEMID dispatch by class type byte (CVE-2010-2568, CVE-2017-8464 CControlPanelFolder attack surface)
+ * IShellLinkW::GetPath                    – CommonNetworkRelativeLink path construction (CVE-2015-0096 attack surface)
+ * IShellLink::GetIconLocation             – paths that resolve icon from CPL
+ * IPropertyStore::GetCount/GetAt/GetValue – decode SerializedPropertyStorage (PropertyStoreDataBlock)
+ * IShellLinkDataList::CopyDataBlock       – per-block re-marshal of every ExtraData signature, exercising the
+ *                                           inverse path that mirrors CShellLink::Load (struct repack, length recompute).
  *
  * All of these COM methods eventually call into shell32.dll (and the namespace extension DLLs it dispatches to).
  * TinyInst is configured to instrument shell32.dll specifically. Not harness.exe. So coverage feedback comes from
  * the LNK parser itself, not from this file's configuration stuff (SHM setup, COM init, IStream wrapper, persistent
  * loop). Those run identically every iteration and carry zero scheduler signal.
+ *
+ * The MSI/Darwin path (MsiGetShortcutTargetW + CommandLineFromMsiDescriptorW in msi.dll) lives in a sibling
+ * harness, harness_darwin.cpp. Splitting it lets that harness instrument msi.dll alone without muxing the two
+ * coverage signals into one corpus.
  *
  * Persistent mode
  * –––––––––––––––
@@ -26,12 +33,6 @@
  * how many loops happen before the harness process is recycled, which limits unbounded growth.
  */
 
-#include <combaseapi.h>
-#include <objidl.h>
-#include <shobjidl_core.h>
-#include <winbase.h>
-#include <winerror.h>
-#include <wtypesbase.h>
 #define _CRT_SECURE_NO_WARNINGS
 #define WIN32_LEAN_AND_MEAN
 
@@ -39,6 +40,9 @@
 #include <objbase.h>
 #include <ShlObj.h>
 #include <ShObjIdl.h>
+#include <propsys.h>
+#include <propvarutil.h>
+
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -60,7 +64,7 @@ static unsigned char* g_shm_data = nullptr;
  * avoids the copy and the link dependency. Only ::Read/::Seek/::Stat are reachable from the LNK parser; the
  * remaining IStream methods (::SetSize, ::CopyTo, ::LockRegion, etc.) return E_NOTIMPL.
  */
-class MemStream :: public IStream {
+class MemStream : public IStream {
 public:
     MemStream(const BYTE* data, ULONG size)
         : data_(data),
@@ -80,14 +84,20 @@ public:
         *ppv = nullptr;
         return E_NOINTERFACE;
     }
-    ULONG STDMETHODCALLTYPE AddRef()  override { return ++refs_; }
+    // refcount is interlocked. shell32 in our STA doesn't actually share these across threads, but
+    // making the COM-mandated contract correct removes a foot-gun if a future code path hands the
+    // stream to a worker (some LoadFromStream paths in shell32 internally pass IStream around).
+    ULONG STDMETHODCALLTYPE AddRef()  override { return (ULONG)InterlockedIncrement(&refs_); }
     ULONG STDMETHODCALLTYPE Release() override {
-        ULONG r = --refs_;
+        LONG r = InterlockedDecrement(&refs_);
         if(r == 0) delete this;
-        return r;
+        return (ULONG)r;
     }
 
     // ISequentialStream
+    // Returns S_FALSE on a short read (fewer bytes than requested), per MSDN. Some parsers branch
+    // on this vs. an S_OK with pcbRead<cb — returning the spec-compliant value is more interesting
+    // for fuzzing because it actually enters those branches.
     HRESULT STDMETHODCALLTYPE Read(void* pv, ULONG cb, ULONG* pcbRead) override {
         if(!pv) return STG_E_INVALIDPOINTER;
         ULONG remaining = (pos_ < size_) ? (size_ - pos_) : 0;
@@ -95,7 +105,7 @@ public:
         if(to_copy) memcpy(pv, data_ + pos_, to_copy);
         pos_ += to_copy;
         if(pcbRead) *pcbRead = to_copy;
-        return S_OK;
+        return (to_copy < cb) ? S_FALSE : S_OK;
     }
     HRESULT STDMETHODCALLTYPE Write(const void*, ULONG, ULONG*) override {
         return STG_E_ACCESSDENIED;  // read-only stream
@@ -116,16 +126,12 @@ public:
         if(new_pos) new_pos->QuadPart = pos_;
         return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE Stat(STATSTG* pstatstg, DWORD grfStatFlag) override {
+    HRESULT STDMETHODCALLTYPE Stat(STATSTG* pstatstg, DWORD /*grfStatFlag*/) override {
         if(!pstatstg) return STG_E_INVALIDPOINTER;
         memset(pstatstg, 0, sizeof(*pstatstg));
         pstatstg->type = STGTY_STREAM;
         pstatstg->cbSize.QuadPart = size_;
-        if(grfStatFlag != STATFLAG_NONAME){
-            // Parser doesn't read the name; allocate empty to be safe.
-            pstatstg->pwcsName = (LPOLESTR)CoTaskMemAlloc(sizeof(WCHAR));
-            if(pstatstg->pwcsName) pstatstg->pwcsName[0] = L'\0';
-        }
+        // pwcsName left null. LNK parser doesn't read it; no need to allocate.
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE SetSize(ULARGE_INTEGER)                                            override { return E_NOTIMPL; }
@@ -137,10 +143,10 @@ public:
     HRESULT STDMETHODCALLTYPE Clone(IStream**)                                                   override { return E_NOTIMPL; }
 
 private:
-    const BYTE* data_;
-    ULONG       size_;
-    ULONG       pos_;
-    ULONG       refs_;
+    const BYTE*  data_;
+    ULONG        size_;
+    ULONG        pos_;
+    volatile LONG refs_;
 };
 
 /**
@@ -206,7 +212,7 @@ void fuzz(char* /*shm_name*/){
         // tracker stuff, loads icons from the icon location string.
         //  . Stuxnet:       CControlPanelFolder dispatch here
         //  . CVE-2017-8464: SpecialFolderDataBlock + KnownFolderDataBlock namespace redirect here
-        link->Resolve(nullptr, SLR_NO_UI | SLR_NOSEARCH | SLR_NOTRACK); // no dialog popups. no tracking. SLR_NOLINKINFO NOT set bc that would suppress the LinkInfo path fallback inside Resolve.
+        link->Resolve(nullptr, SLR_NO_UI | SLR_NOSEARCH | SLR_NOTRACK);
         
         // GetIDList
         // force full PIDL serialization back out, which re-walks every SHITEMID and exercises the
@@ -220,7 +226,7 @@ void fuzz(char* /*shm_name*/){
         // exercises the path construction logic that CVE-2015-0096 lived in (LinkInfo path concat with
         // embedded spaces, fallback to LinkTargetIDList path).
         WCHAR path_buf[MAX_PATH] = {0};
-        WIN32_FIND_DATAW fd = {0};
+        WIN32_FIND_DATAW fd = {0}; // required by API; we don't read the result
         link->GetPath(path_buf, MAX_PATH, &fd, SLGP_RAWPATH);
 
         // GetIconLocation
@@ -229,6 +235,78 @@ void fuzz(char* /*shm_name*/){
         WCHAR icon_buf[MAX_PATH] = {0};
         int icon_index = 0;
         link->GetIconLocation(icon_buf, MAX_PATH, &icon_index);
+
+        // IPropertyStore enumeration
+        // forces the SerializedPropertyStorage decoded by Load to actually flow through the property marshaling
+        // code. without this, propstore mutations get parsed and then sit in CShellLink's member fields untouched.
+        IPropertyStore* propstore = nullptr;
+        hr = link->QueryInterface(IID_IPropertyStore, (void**)&propstore);
+        if(SUCCEEDED(hr) && propstore){
+            DWORD count = 0;
+            if(SUCCEEDED(propstore->GetCount(&count))){
+                // cap at 64 so a malformed propstore claiming a billion properties
+                // can't pin the iteration. realistic .lnk files have <10 properties.
+                // understand: this cap limits how many properties the harness enumerates
+                // per iteration. it doesn't limit what the mutator can produce.
+                if(count > 64) count = 64;
+                for(DWORD i = 0; i < count; i++){
+                    PROPERTYKEY key = {0};
+                    if(FAILED(propstore->GetAt(i, &key))) continue;
+                    PROPVARIANT val;
+                    PropVariantInit(&val);
+                    propstore->GetValue(key, &val);   // exercises the actual decode path
+                    PropVariantClear(&val);
+                }
+            }
+            propstore->Release();
+        }
+
+        // StringData getters
+        WCHAR desc[INFOTIPSIZE] = {0};
+        link->GetDescription(desc, INFOTIPSIZE);
+        WCHAR args[INFOTIPSIZE] = {0};
+        link->GetArguments(args, INFOTIPSIZE);
+        WCHAR wd[MAX_PATH] = {0};
+        link->GetWorkingDirectory(wd, MAX_PATH);
+        WORD hotkey = 0;
+        link->GetHotkey(&hotkey);
+        int show_cmd = 0;
+        link->GetShowCmd(&show_cmd);
+
+        // ExtraData re-marshal via IShellLinkDataList::CopyDataBlock.
+        // CShellLink::Load decoded each ExtraData block into member fields. CopyDataBlock(SIG)
+        // forces the inverse path: serialize the cached fields back into the on-disk block layout.
+        // Without this, the per-block marshal code (struct repack, GUID write, length recompute)
+        // sits cold even when mutators emit interesting payloads.
+        //
+        // Every signature listed here corresponds to one of the GROUP_EXTRA_* / GROUP_*FOLDER /
+        // GROUP_DARWIN / GROUP_TRACKER / GROUP_PROPSTORE_* operator groups in mutate.h. Keep this
+        // list aligned with the LinkFlags-gated set in deserialize.c.
+        IShellLinkDataList* dl = nullptr;
+        if(SUCCEEDED(link->QueryInterface(IID_IShellLinkDataList, (void**)&dl)) && dl){
+            // Raw hex literals rather than EXP_*/NT_*_SIG macros: not all of these names
+            // are present in every Windows SDK and we want this harness portable across
+            // Jackalope build environments.
+            static const DWORD kSigs[] = {
+                0xA0000001, // EnvironmentVariableDataBlock
+                0xA0000002, // ConsoleDataBlock
+                0xA0000003, // TrackerDataBlock                — GROUP_TRACKER
+                0xA0000004, // ConsoleFEDataBlock
+                0xA0000005, // SpecialFolderDataBlock          — GROUP_SPECIALFOLDER
+                0xA0000006, // DarwinDataBlock                 — structural decode here, msi.dll consumption in harness_darwin
+                0xA0000007, // IconEnvironmentDataBlock
+                0xA0000009, // PropertyStoreDataBlock          — GROUP_PROPSTORE_*
+                0xA000000B, // KnownFolderDataBlock            — GROUP_KNOWNFOLDER
+                0xA000000C  // VistaAndAboveIDListDataBlock
+            };
+            for(size_t i = 0; i < sizeof(kSigs)/sizeof(kSigs[0]); i++){
+                void* blk = nullptr;
+                if(SUCCEEDED(dl->CopyDataBlock(kSigs[i], &blk)) && blk){
+                    LocalFree(blk);
+                }
+            }
+            dl->Release();
+        }
     }
     link->Release();
     stream->Release();
