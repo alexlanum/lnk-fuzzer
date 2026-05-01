@@ -2618,6 +2618,19 @@ static void op_apply(LNKRand* rng, MutationOperator op, LNKGeneratorState* state
     }
 }
 
+// Snapshot the layout flags that the scheduler's precondition filter consults
+// (which operators are applicable on this sample). The deserializer already
+// populates state->core during parsing — we just hand that back. Recomputing
+// from the live state instead of trusting the cached field would be defensive
+// but redundant; deserialize_lnk and the mutator are the only writers of these
+// fields, and the mutator calls this exactly once per round, immediately after
+// deserialize, before any operator runs. If a future caller needs a fresh
+// layout mid-round, swap the body for an explicit walk over state->extradata
+// and state->stringdata.
+LNKLayout mutate_extract_layout(LNKGeneratorState* state){
+    return state->core;
+}
+
 // called once per LnkMutator (i.e., once per worker thread).
 // seed comes from the caller — LnkMutator's ctor decides policy.
 // Called once at startup, from main() before fuzzer->Run().

@@ -6,3 +6,13 @@ harness
 compile_commands.json
 test.exe
 *a.exe
+
+# CMake build tree
+build/
+
+# Fuzzing campaign output — fast-growing, machine-specific. Never commit.
+findings/
+
+# Seeds: ignore by default. Drop a corpus/seeds/.gitkeep + selective
+# `!corpus/seeds/known-good.lnk` entries if you want to commit a curated set.
+corpus/

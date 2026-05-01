@@ -26,10 +26,22 @@ cmake_minimum_required(VERSION 3.10)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# CMake 4.x removed the compatibility shim that let old `cmake_minimum_required(VERSION <3.5)`
+# files configure. Jackalope's libxslt example tree is one of those (it predates the shim's
+# removal). Setting this variable before add_subdirectory(Jackalope) makes ancient minimums
+# resolve to 3.5 instead of erroring out. We don't actually use the libxslt example, but
+# Jackalope's own CMakeLists.txt does `add_subdirectory(examples)` unconditionally, so we
+# have to keep the configure step from blowing up there.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+
 project(lnk_fuzzer LANGUAGES C CXX)
 
 # Bring in Jackalope's fuzzerlib + tinyinst. This pulls Jackalope's own targets (fuzzer, test,
 # fuzzerlib, tinyinst, plus its examples/) into the build. We only depend on `fuzzerlib`.
+#
+# Prerequisite: Jackalope/TinyInst/ must be populated. If the Jackalope checkout is a git
+# clone, run `git submodule update --init --recursive` from inside Jackalope/. If it's a
+# tarball drop, copy TinyInst's source into Jackalope/TinyInst/ manually.
 add_subdirectory(Jackalope)
 
 # lnk_fuzzer_main.cc and lnk_mutator.cc include Jackalope headers by bare name
