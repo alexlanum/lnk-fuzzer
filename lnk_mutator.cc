@@ -89,6 +89,13 @@ public:
             return false;
         }
 
+        // Defensive bound: out_len must never exceed the buffer we just wrote into.
+        // We've seen crashes where stack-resident `out_len` ends up with garbage in its
+        // upper 32 bits (~4 GiB) and Sample::Init's memcpy walks off the end of buf_.
+        // Until the root cause is fully nailed, refuse to ship samples whose size
+        // exceeds the buffer that produced them.
+        if(out_len > buf_.size()) return false;
+
         // Sample::Init takes (const char*, size_t). buf_ is uint8_t*; cast.
         inout_sample->Init(reinterpret_cast<const char*>(buf_.data()), out_len);
         return true;

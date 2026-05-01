@@ -315,7 +315,12 @@ typedef struct {
                              // deserialize, used by serialize so unrecognized signatures roundtrip
                              // correctly instead of collapsing to zero.
     ExtraDataType type;
-    uint8_t*      data; // raw bytes after signature
+    uint8_t*      data;     // raw bytes after signature
+    uint32_t      data_len; // actual allocation length of `data`. Separate from `size` because the
+                            // mutator may change `size` to claim a different on-disk length (e.g.
+                            // MUTATE_BLOCK_SIZE_OVERFLOW), but the buffer underneath stays at the
+                            // length deserialize.c originally allocated. Serialize uses
+                            // min(size-8, data_len) to bound the memcpy and avoids OOB reads.
     /**
      * BYTE 0  – [storage_size]  . 4  bytes: size of this whole storage
      * BYTE 4  – [version]       . 4  bytes: must be "1SPS"

@@ -225,8 +225,16 @@ static int serialize_linkinfo(uint8_t* buf, size_t cap, size_t* off, const LinkI
         TRY(write_bytes(buf, cap, &cps_uni, linkinfo->common_path_suffix_unicode, utf16le_bytelen(linkinfo->common_path_suffix_unicode, sizeof(linkinfo->common_path_suffix_unicode))));
     }
 
-    // advance offset past entire LinkInfo so the next section (StringData or ExtraData) starts at the right pos
-    *off = linkinfo_start + linkinfo->link_info_size;
+    // Advance offset past the entire LinkInfo so the next section (StringData or ExtraData) starts at the right position.
+    //
+    // CRITICAL: link_info_size is mutator-controlled. If a mutator set it to ~UINT32_MAX,
+    // (linkinfo_start + link_info_size) overflows into the upper 32 bits of size_t,
+    // poisons *off, and eventually gets handed to Sample::Init as a memcpy size — which
+    // walks 4 GiB off the end of the output buffer. Clamp the new position against cap
+    // so a corrupt size_field can't propagate past the buffer we're allowed to use.
+    size_t new_off = linkinfo_start + linkinfo->link_info_size;
+    if(new_off > cap || new_off < linkinfo_start) return -1;  // overflow or oversize
+    *off = new_off;
 
     return 0;
 }
@@ -300,9 +308,22 @@ static int serialize_extradata(uint8_t* buf, size_t cap, size_t* off, const Extr
         }
         TRY(write_u32(buf, cap, off, sig));
 
-        // Payload[BlockSize - 8]
-        if(((block->size - 8) > 0) && block->data){
-            TRY(write_bytes(buf, cap, off, block->data, block->size - 8));
+        // Payload[BlockSize - 8].
+        // The on-disk length the spec wants is (block->size - 8), which the mutator may
+        // have inflated above what's actually allocated in block->data. Bound the memcpy
+        // by min(spec_len, data_len) so we never read past the allocation. Pad with zeros
+        // if spec_len > data_len so the on-disk block still matches block->size.
+        if(block->size > 8 && block->data){
+            uint32_t spec_len = block->size - 8;
+            uint32_t copy_len = (spec_len < block->data_len) ? spec_len : block->data_len;
+            if(copy_len > 0){
+                TRY(write_bytes(buf, cap, off, block->data, copy_len));
+            }
+            // pad the rest with zeros so the on-disk block size still matches block->size
+            // each write_u8 checks capacity, so a hostile spec_len cant overflow the buffer
+            for(uint32_t i = copy_len; i < spec_len; i++){
+                TRY(write_u8(buf, cap, off, 0));
+            }
         }
     }
 
@@ -332,6 +353,11 @@ int serialize_lnk(uint8_t* buf, size_t cap, size_t* out_len, const LNKGeneratorS
 
     if(state->core.has_extradata)
         TRY(serialize_extradata(buf, cap, &offset, &state->extradata));
+
+    // Sanity: any section serializer that mutator-trusted a size field could leave
+    // `offset` past `cap`. Reject the whole serialization rather than ship a size that
+    // tells Sample::Init to memcpy gigabytes from a 1 MiB buffer.
+    if(offset > cap) return -1;
 
     *out_len = offset;
 

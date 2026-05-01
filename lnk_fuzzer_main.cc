@@ -35,9 +35,20 @@ extern Mutator* CreateLNKMutator();
 
 class LNKFuzzer : public Fuzzer {
 public:
-    // Required override (CreateMutator is pure-virtual on Fuzzer).
-    Mutator* CreateMutator(int /*argc*/, char** /*argv*/, ThreadContext* /*tc*/) override {
-        return CreateLNKMutator();
+    // CreateMutator must wrap LNKMutator in NRoundMutator. Without it, the round
+    // length depends on whether our scheduler can find an applicable operator on
+    // a given state — when mutate_apply returns -1 (precondition filter rejected
+    // every candidate), LNKMutator::Mutate returns false, which the fuzzer reads
+    // as "round done." A pathological corpus can then exhaust the worker after
+    // a few thousand execs because each round runs only one mutation.
+    //
+    // NRoundMutator decouples the two: the round ends when its internal counter
+    // reaches `nrounds`, regardless of how the child mutator behaved. This is
+    // exactly the wrapping Jackalope's stock BinaryFuzzer applies to its own
+    // mutator chain (see Jackalope/main.cpp's NRoundMutator(repeater, nrounds)).
+    Mutator* CreateMutator(int argc, char** argv, ThreadContext* /*tc*/) override {
+        int nrounds = GetIntOption("-iterations_per_round", argc, argv, 1000);
+        return new NRoundMutator(CreateLNKMutator(), nrounds);
     }
 
     // Optional override; replaces Jackalope's MTPRNG with our LNKPRNG

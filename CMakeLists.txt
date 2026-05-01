@@ -88,6 +88,18 @@ target_include_directories(lnk_fuzzer PRIVATE
 
 target_link_libraries(lnk_fuzzer PRIVATE fuzzerlib)
 
+# Force debug info in Release builds so cdb/windbg can resolve symbols when the
+# fuzzer crashes. Without this, MSVC's CMake generator omits PDBs for Release
+# configs and crash dumps come back as bare hex offsets.
+#  /Zi      — full debug info compiler-side
+#  /DEBUG   — linker emits a .pdb next to the .exe
+#  /OPT:REF /OPT:ICF — keep optimizer behavior; without these, /DEBUG implies
+#                     /OPT:NOREF which bloats the binary
+if(MSVC)
+    target_compile_options(lnk_fuzzer PRIVATE /Zi)
+    target_link_options(lnk_fuzzer PRIVATE /DEBUG /OPT:REF /OPT:ICF)
+endif()
+
 # ---------------------------------------------------------------------------------------------
 # harness.exe — shell32.dll fuzz target.
 # Pure Win32 + COM. No Jackalope link; it talks to the fuzzer over the SHM channel only.
@@ -97,6 +109,10 @@ if(WIN32)
     target_link_libraries(harness PRIVATE ole32 shell32 propsys oleaut32)
     # /GS, /sdl etc. are MSVC defaults at Release. We don't disable them — fuzzer perf is
     # gated by shell32 anyway, and turning them off would mask real CFG-detected corruption.
+    if(MSVC)
+        target_compile_options(harness PRIVATE /Zi)
+        target_link_options(harness PRIVATE /DEBUG /OPT:REF /OPT:ICF)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------------------------
@@ -107,4 +123,8 @@ endif()
 if(WIN32)
     add_executable(harness_darwin harness_darwin.cpp)
     target_link_libraries(harness_darwin PRIVATE msi ole32 shell32)
+    if(MSVC)
+        target_compile_options(harness_darwin PRIVATE /Zi)
+        target_link_options(harness_darwin PRIVATE /DEBUG /OPT:REF /OPT:ICF)
+    endif()
 endif()

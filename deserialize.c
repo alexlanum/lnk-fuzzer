@@ -609,9 +609,11 @@ static int deserialize_stringdata(const uint8_t* buf, size_t len, size_t* off, S
                 memcpy(&iv->typed_value.padding, payload_data + tpv_off + 2, 2); // padding
 
                 if(tpv_len > 4){
-                    uint32_t val_len = tpv_len - 4; // how many bytes of actual value data exist
+                    // tpv_len = val_size - 9 where val_size is uint32_t, so tpv_len-4 always
+                    // fits in uint32_t. The cast silences MSVC C4267 without changing behavior.
+                    uint32_t val_len = (uint32_t)(tpv_len - 4); // how many bytes of actual value data exist
                     if(val_len > sizeof(iv->typed_value.value))
-                        val_len = sizeof(iv->typed_value.value);
+                        val_len = (uint32_t)sizeof(iv->typed_value.value);
                     memcpy(iv->typed_value.value, payload_data + tpv_off + 4, val_len);
                     iv->typed_value.value_len = val_len;
                 } else{
@@ -716,11 +718,16 @@ static int deserialize_extradata(const uint8_t* buf, size_t len, size_t* off, LN
             default:         block->type = EXTRA_UNKNOWN;          break;
         }
 
-        // Store the raw payload which comes after BlockSignature
+        // Store the raw payload which comes after BlockSignature.
+        // data_len records the actual allocation length so serialize can bound its memcpy
+        // even when the mutator later changes block->size out from under us.
         if(payload_len > 0){
             block->data = malloc(payload_len);
             if(!block->data) return -1;
             TRY(read_bytes(buf, len, off, block->data, payload_len));
+            block->data_len = payload_len;
+        } else {
+            block->data_len = 0;
         }
 
         extradata->block_count++;

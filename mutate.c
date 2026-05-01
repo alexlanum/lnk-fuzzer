@@ -1347,14 +1347,21 @@ static void apply_extra_seq(LNKRand* rng, MutationOperator op, LNKGeneratorState
             int src = lnk_rand(rng) % extra->block_count;
             ExtraDataBlock* s = &extra->blocks[src]; // random block
             ExtraDataBlock* d = &extra->blocks[extra->block_count]; // end
-            d->size = s->size;
-            d->type = s->type;
-            int data_len = (s->size > 8) ? s->size - 8 : 0;
+            d->size      = s->size;
+            d->signature = s->signature;
+            d->type      = s->type;
+            // Bound the duplicate by s->data_len, not by s->size-8. If s was previously
+            // mutated to claim a larger size than its actual data buffer, copying s->size-8
+            // bytes from s->data would read past the heap allocation.
+            uint32_t data_len = s->data_len;
             if(s->data && data_len > 0){
                 d->data = malloc(data_len);
+                if(!d->data) return;
                 memcpy(d->data, s->data, data_len);
+                d->data_len = data_len;
             } else{
                 d->data = NULL;
+                d->data_len = 0;
             }
             extra->block_count++;
             break;
@@ -1383,8 +1390,10 @@ static void apply_extra_seq(LNKRand* rng, MutationOperator op, LNKGeneratorState
             // 8 minimum ensures enough bytes for handlers to start parsing
             // 39 maximum keeps it small enough to pass SHReadDataBlockList validation (< 0xFFFF)
             block->data = calloc(1, data_len);
+            if(!block->data) break;
             for(int i = 0; i < data_len; i++)
                 block->data[i] = lnk_rand(rng) & 0xFF; // fill payload w random stuff
+            block->data_len = (uint32_t)data_len;
             block->size = 8 + data_len; // header + payload
             extra->block_count++;
             break;
@@ -2439,6 +2448,7 @@ static void apply_specialfolder(LNKRand* rng, MutationOperator op, LNKGeneratorS
                 state->extradata.block_count--;
                 return;
             }
+            b->data_len = 16;
 
             uint32_t csidl = 0x0003; // CSIDL_CONTROLS
             memcpy(b->data, &csidl, 4);
