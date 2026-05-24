@@ -45,6 +45,13 @@ public:
         buf_.resize(LNK_MAX_BYTES);
     }
 
+    // Free any per-state heap (PIDL items, ExtraData blocks, StringData strings)
+    // left over when the worker thread shuts down. Without this, every fuzz
+    // campaign leaks N_workers × <last-round heap>; minor but tidy.
+    ~LNKMutator() override {
+        lnk_state_free(&state_);
+    }
+
     // Called once per round, before Mutate(). The sample we get here is
     // the seed Jackalope picked from its queue. We parse it once and
     // cache the resulting state so subsequent Mutate() calls in this
@@ -53,6 +60,14 @@ public:
     // Note: Jackalope's InitRound returns void. If the seed fails to
     // parse we just leave initialized_ = false and let Mutate() bail.
     void InitRound(Sample* input_sample, MutatorSampleContext* /*context*/) override {
+        // Drop the previous round's heap-owned pointers (PIDL items, ExtraData
+        // block data, StringData strings) before deserialize_lnk overwrites the
+        // count fields and pointer fields with fresh allocations. Without this
+        // call every InitRound leaks the previous round's heap — at 24 workers ×
+        // tens of thousands of rounds, the leak fills the heap and trips
+        // ntdll's STATUS_HEAP_CORRUPTION guard (0xC0000374) within ~60s.
+        lnk_state_free(&state_);
+
         // Sample::bytes is char*; our deserialize takes uint8_t*. Cast.
         const uint8_t* bytes = reinterpret_cast<const uint8_t*>(input_sample->bytes);
         if(deserialize_lnk(bytes, input_sample->size, &state_) < 0){

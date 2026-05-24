@@ -805,6 +805,14 @@ static void apply_pidl(LNKRand* rng, MutationOperator op, LNKGeneratorState* sta
             ItemID* src = &pidl->items[idx];
             ItemID* dst = &pidl->items[pidl->item_count]; // end
             *dst = *src; // get the struct fields
+            // *dst = *src is a shallow struct copy: dst->raw and dst->payload now alias src.
+            // We overwrite ->raw unconditionally below, but ->payload is only overwritten
+            // when src->payload_len > 0. If payload_len == 0 but src->payload != NULL
+            // (reachable via MUTATE_PIDL_CHAIN_TRUNCATION, which can truncate payload_len
+            // to 0 without freeing the buffer), dst->payload would remain aliased to src's
+            // buffer — a later REMOVE_ITEM on either side double-frees. Clear it first.
+            dst->raw = NULL;
+            dst->payload = NULL;
             dst->raw = malloc(src->raw_len);
             memcpy(dst->raw, src->raw, src->raw_len);
             if(src->payload_len > 0){
@@ -2757,4 +2765,39 @@ MutationOperator mutate_apply(LNKRand* rng, LNKGeneratorState* state, LNKLayout*
     op_apply(rng, chosen_op, state, layout);
 
     return chosen_op;
+}
+
+void lnk_state_free(LNKGeneratorState* state){
+    if(!state) return;
+
+    // PIDL items
+    LinkTargetIDList* pidl = &state->linktargetidlist;
+    for(int i = 0; i < pidl->item_count; i++){
+        free(pidl->items[i].raw);
+        free(pidl->items[i].payload);
+        pidl->items[i].raw = NULL;
+        pidl->items[i].payload = NULL;
+        pidl->items[i].raw_len = 0;
+        pidl->items[i].payload_len = 0;
+    }
+    pidl->item_count = 0;
+
+    // ExtraData blocks
+    ExtraDataState* extra = &state->extradata;
+    for(int i = 0; i < extra->block_count; i++){
+        free(extra->blocks[i].data);
+        extra->blocks[i].data = NULL;
+        extra->blocks[i].data_len = 0;
+    }
+    extra->block_count = 0;
+
+    // StringData strings — allocated by deserialize as malloc'd char buffers.
+    // The has_* flags don't necessarily match pointer presence in the corruption
+    // window between InitRound calls; free unconditionally (free(NULL) is safe).
+    StringDataState* sd = &state->stringdata;
+    free(sd->name);            sd->name = NULL;            sd->has_name = 0;            sd->name_len = 0;
+    free(sd->relative_path);   sd->relative_path = NULL;   sd->has_relative_path = 0;   sd->rel_len = 0;
+    free(sd->working_dir);     sd->working_dir = NULL;     sd->has_working_dir = 0;     sd->work_len = 0;
+    free(sd->arguments);       sd->arguments = NULL;       sd->has_arguments = 0;       sd->arg_len = 0;
+    free(sd->icon_location);   sd->icon_location = NULL;   sd->has_icon_location = 0;   sd->icon_len = 0;
 }

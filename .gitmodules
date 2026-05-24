@@ -1,0 +1,3 @@
+[submodule "Jackalope"]
+	path = Jackalope
+	url = https://github.com/googleprojectzero/Jackalope.git

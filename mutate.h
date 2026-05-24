@@ -183,6 +183,23 @@ MutationOperator mutate_apply(LNKRand* rng, LNKGeneratorState* state, LNKLayout*
  */
 void mutate_report(MutationOperator op, int new_cov);
 
+/**
+ * Free every heap-owned pointer inside an LNKGeneratorState and zero its
+ * counts so the struct is in a safe default state for re-deserialization.
+ *
+ * Why this exists: LNKMutator's state_ member is reused across InitRound calls.
+ * deserialize_lnk allocates fresh ItemID raw/payload buffers, ExtraDataBlock
+ * data buffers, and StringData strings into the struct, but it does NOT free
+ * what was there before. Without this call, every InitRound leaks the previous
+ * round's heap. Over thousands of rounds × 24 worker threads, the leak fills
+ * the heap and (combined with any per-round mutator aliasing) tips into the
+ * ntdll heap-corruption guard (STATUS_HEAP_CORRUPTION / 0xC0000374).
+ *
+ * Call this in InitRound before deserialize_lnk and in the LNKMutator destructor.
+ * Safe to call on a zero-initialized state (free(NULL) is a no-op).
+ */
+void lnk_state_free(LNKGeneratorState* state);
+
 #ifdef __cplusplus
 }
 #endif
