@@ -1,25 +1,44 @@
-Build
+## Build
 ```
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 python tools\generate_seeds.py
 ```
 
-Run
+## Run
 ```
-build\Release\lnk_fuzzer.exe ^
-  -in corpus\seeds -out findings ^
-  -nthreads 24 ^
-  -t 5000 -t1 10000 ^
-  -delivery shmem ^
-  -instrument_module shell32.dll ^
-  -target_module harness.exe -target_method fuzz -nargs 1 ^
-  -iterations 10000 -persist -loop ^
-  -cmp_coverage -generate_unwind ^
-  -- build\Release\harness.exe -m @@
+build\Release\lnk_fuzzer.exe `
+  -in corpus\seeds -out findings `
+  -nthreads 24 `
+  -t 5000 -t1 10000 `
+  -delivery shmem -max_sample_size 1048576 `
+  -instrument_module shell32.dll `
+  -target_module harness.exe -target_method fuzz -nargs 1 `
+  -iterations 10000 -persist -loop `
+  -cmp_coverage -generate_unwind `
+  --% -- build\Release\harness.exe -m @@
 ```
 
-Parallelism
+- `-in corpus\seeds` — folder of starting .lnk files to mutate from
+- `-out findings` — where crashes, new samples, and state get written
+- `-nthreads 24` — run 24 fuzzing workers in parallel
+- `-t 5000` — kill a sample if it runs longer than 5 seconds
+- `-t1 10000` — give the harness 10 seconds to start up the first time
+- `-delivery shmem` — pass samples via shared memory (fast, no disk I/O)
+- `-max_sample_size 1048576` — cap samples at 1 MiB; **must match what harness.exe expects** (this was the fix)
+- `-instrument_module shell32.dll` — collect coverage from shell32.dll, the actual parser
+- `-target_module harness.exe` — the binary containing the function to call repeatedly
+- `-target_method fuzz` — name of the function inside harness.exe to enter on each iteration
+- `-nargs 1` — that `fuzz` function takes 1 argument (the shm name)
+- `-iterations 10000` — restart the harness process every 10k samples to clear memory bloat
+- `-persist` — don't relaunch harness.exe per sample; just call `fuzz` again
+- `-loop` — make the function "return" jump back to its start so it loops forever
+- `-cmp_coverage` — also track byte-comparison instructions, helps blast through magic numbers (LNK has lots: 0x4C header, CLSID, signatures)
+- `-generate_unwind` — handle Windows exception unwinding so shell32's own SEH doesn't look like crashes
+- `--` — divider: everything after this is the harness command line, not a fuzzer flag
+- `build\Release\harness.exe -m @@` — the actual program the fuzzer launches; `@@` gets swapped for the shm name at runtime
+
+## Parallelism
 LNKFuzzer just subclasses Jackalope's Fuzzer (lnk_fuzzer_main.cc:36), so it inherits the full -start_server / -server client-server distribution model — the server collects coverage + crashes + samples from all workers and broadcasts new-coverage samples back. Nothing LNK-specific was disabled.
 
 PC #1 (server, doesn't fuzz, just coordinates):
