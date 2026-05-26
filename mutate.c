@@ -573,15 +573,18 @@ static void apply_sizes(LNKRand* rng, MutationOperator op, LNKGeneratorState* st
                 case T_PROPSTORE_STOR:
                     // storage_size = 0: terminates chunk walk early (while(chunkSize != 0))
                     for(int i = 0; i < state->extradata.block_count; i++)
-                        if(state->extradata.blocks[i].type == EXTRA_PROPERTY_STORE && state->extradata.blocks[i].data)
+                        if(state->extradata.blocks[i].type == EXTRA_PROPERTY_STORE
+                           && state->extradata.blocks[i].data
+                           && state->extradata.blocks[i].data_len >= 4)
                             memset(state->extradata.blocks[i].data, 0, 4);
                     break;
                 case T_PROPSTORE_VAL:
                     // value_size = 0: terminates serialized value walk (while(*(ULONG*)prop != 0))
                     for(int i = 0; i < state->extradata.block_count; i++)
                         if(state->extradata.blocks[i].type == EXTRA_PROPERTY_STORE && state->extradata.blocks[i].data){
-                            uint32_t payload_len = state->extradata.blocks[i].size - 8;
-                            if(payload_len > 28) // ensure bytes 24-27 exist before writing
+                            // Gate on data_len, not size-8. A prior size-mutation operator may
+                            // have inflated block->size without growing the underlying buffer.
+                            if(state->extradata.blocks[i].data_len >= 28) // bytes 24..27 must exist
                                 memset(state->extradata.blocks[i].data + 24, 0, 4); // offset 24 is value_size
                             break;
                         }
@@ -617,7 +620,9 @@ static void apply_sizes(LNKRand* rng, MutationOperator op, LNKGeneratorState* st
                 case T_PROPSTORE_STOR:
                     // storage_size < 24 (4 size + 4 version + 16 fmtid)
                     for(int i = 0; i < state->extradata.block_count; i++)
-                        if(state->extradata.blocks[i].type == EXTRA_PROPERTY_STORE && state->extradata.blocks[i].data){
+                        if(state->extradata.blocks[i].type == EXTRA_PROPERTY_STORE
+                           && state->extradata.blocks[i].data
+                           && state->extradata.blocks[i].data_len >= 4){
                             uint32_t undersized = lnk_rand(rng) % 24;
                             memcpy(state->extradata.blocks[i].data, &undersized, 4);
                             break;
@@ -627,8 +632,8 @@ static void apply_sizes(LNKRand* rng, MutationOperator op, LNKGeneratorState* st
                     // value_size > 0 but < 9: enters serialized walk with undersized entry
                     for(int i = 0; i < state->extradata.block_count; i++){
                         if(state->extradata.blocks[i].type == EXTRA_PROPERTY_STORE && state->extradata.blocks[i].data){
-                            uint32_t payload_len = state->extradata.blocks[i].size - 8;
-                            if(payload_len > 28){ // enough room for storage header + value_size
+                            // Gate on data_len; block->size may be mutator-inflated.
+                            if(state->extradata.blocks[i].data_len >= 28){ // bytes 24..27 must exist
                                 uint32_t undersized = 1 + (lnk_rand(rng) % 8);
                                 memcpy(state->extradata.blocks[i].data + 24, &undersized, 4);
                             }
@@ -1191,7 +1196,10 @@ static void apply_offsets(LNKRand* rng, MutationOperator op, LNKGeneratorState* 
     // but the mutation strategies still apply
     for(int i = 0; i < state->extradata.block_count; i++){
         ExtraDataBlock* edb = &state->extradata.blocks[i];
-        if(edb->type == EXTRA_SPECIAL_FOLDER && edb->data){
+        // Gate on data_len, not edb->size — a prior mutation (e.g. MUTATE_BLOCK_SIZE_OVERFLOW)
+        // can drive size out of sync with the underlying allocation. Reading/writing the
+        // 4-byte Offset field requires data_len to actually contain those 4 bytes.
+        if(edb->type == EXTRA_SPECIAL_FOLDER && edb->data && edb->data_len >= 8){
             // SpecialFolderDataBlock:
             // 0x00  4  BlockSize        = 0x10
             // 0x04  4  BlockSignature   = 0xA0000005
@@ -1199,7 +1207,7 @@ static void apply_offsets(LNKRand* rng, MutationOperator op, LNKGeneratorState* 
             // 0x0C  4  Offset           = index into PIDL
             // payload layout: [SpecialFolderID:4][Offset:4]
             offset_fields[field_count++] = (uint32_t*)(edb->data + 4);
-        } else if(edb->type == EXTRA_KNOWN_FOLDER && edb->data){
+        } else if(edb->type == EXTRA_KNOWN_FOLDER && edb->data && edb->data_len >= 20){
             // KnownFolderDataBlock:
             // 0x00  4   BlockSize       = 0x1C
             // 0x04  4   BlockSignature  = 0xA000000B
@@ -1998,8 +2006,9 @@ static void apply_darwin(LNKRand* rng, MutationOperator op, LNKGeneratorState* s
     if(!block || !block->data) return;
 
     // a proper DarwinDataBlock is 0x314 bytes on the wire -> 0x30C payload
-    // so refuse to touch anything smaller; caller can use a size-mutation op for that
-    if(block->size < 8 + 780) return;
+    // so refuse to touch anything smaller; caller can use a size-mutation op for that.
+    // Gate on data_len (real buffer), not size (mutator-controlled on-disk claim).
+    if(block->data_len < 780) return;
 
     uint8_t* ansi = block->data; // 260
     uint8_t* uni = block->data + 260; // 520 UTF16-LE
@@ -2167,7 +2176,7 @@ static void apply_darwin(LNKRand* rng, MutationOperator op, LNKGeneratorState* s
 static void apply_tracker(LNKRand* rng, MutationOperator op, LNKGeneratorState* state){
     ExtraDataBlock* block = find_extra_block(&state->extradata, EXTRA_TRACKER);
     if(!block || !block->data) return;
-    if(block->size < 8 + 88) return; // 8 header + 88 payload
+    if(block->data_len < 88) return; // gate on actual allocation, not mutator-controlled size
     uint8_t* data = block->data;
 
     switch(op){
@@ -2344,7 +2353,7 @@ static void apply_knownfolder(LNKRand* rng, MutationOperator op, LNKGeneratorSta
     
     ExtraDataBlock* block = find_extra_block(&state->extradata, EXTRA_KNOWN_FOLDER);
     if(!block || !block->data) return;
-    if(block->size < 8 + 20) return; // 8 header + 20 payload
+    if(block->data_len < 20) return; // gate on actual allocation, not mutator-controlled size
     uint8_t* data = block->data;
 
     switch(op){
@@ -2421,7 +2430,10 @@ static void apply_specialfolder(LNKRand* rng, MutationOperator op, LNKGeneratorS
 
     ExtraDataBlock* block = find_extra_block(&state->extradata, EXTRA_SPECIAL_FOLDER);
     uint8_t* data = NULL;
-    if(block && block->data && block->size >= 8 + 16)
+    // The mutators below write at offsets 0..3 (CSIDL) and 4..7 (Offset) — need 8 bytes
+    // available in the underlying allocation. Gate on data_len, not on the mutator-controlled
+    // on-disk size.
+    if(block && block->data && block->data_len >= 8)
         data = block->data;
     
     switch(op){
