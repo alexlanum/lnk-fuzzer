@@ -1,4 +1,8 @@
-# TrackerDataBlock
+# ExtraData blocks — security-relevant deep dives
+
+*Field-level notes on the ExtraData blocks that carry attack surface, and the shell32 code that consumes them. Full section layout is in [lnk-format.md](lnk-format.md); the CVEs are in [attack-surface.md](attack-surface.md).*
+
+## TrackerDataBlock
 
 The TrackerDataBlock contains Distributed Link Tracking (DLT) properties.
 

@@ -1,4 +1,8 @@
-# MS-SHLLNK Format
+# LNK format reference
+
+*Working notes on MS-SHLLINK as the parser sees it: section layout, the deserializer's view, and the resolution/invocation paths the harness drives. Companion to [extra-data.md](extra-data.md) and [attack-surface.md](attack-surface.md).*
+
+## MS-SHLLNK Format
 
 ```
 [ShellLinkHeader]        (required)
