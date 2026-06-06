@@ -1,4 +1,8 @@
-# Stuxnet
+# Attack surface — the CVEs the operators target
+
+*The historical LNK code-execution bugs that shape the mutation operators and the behavioral oracle. Each maps to operator groups in [`mutate.h`](../mutate.h) and to the sink the oracle watches ([oracles.md](oracles.md)).*
+
+## Stuxnet — CVE-2010-2568
 
 Code execution became possible merely by displaying the icon of a `.lnk` file.
 

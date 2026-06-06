@@ -47,6 +47,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "oracle.h"  // behavioral (sink) oracle: turns an attacker-steered module load into a crash
+
 // Jackalope's SHM sample delivery layout: [uint32 size][bytes...]
 // All three constants must agree with LNK_MAX_BYTES in lnk_mutator.cc and
 // Jackalope's Sample::max_size — if any one is smaller, large samples get
@@ -180,6 +182,10 @@ void fuzz(char* /*shm_name*/){
     if(sample_size == 0 || sample_size > MAX_SAMPLE_SIZE) return;
     const BYTE* sample_bytes = (const BYTE*)(g_shm_data + SHM_HEADER_SIZE); // bytes[0]
 
+    // Arm input-taint tagging for this iteration: a sink hit whose module path is present in these
+    // bytes is provably mutator-driven (see oracle.h). Re-armed every call; the pointer is into SHM.
+    oracle_set_sample(sample_bytes, sample_size);
+
     // wrap the bytes in an IStream the ShellLink parser can consume.
     // allocated onto the heap because IPersistStream::Load may keep references
     // transiently; refcounting handles the lifetime properly.
@@ -219,6 +225,35 @@ void fuzz(char* /*shm_name*/){
         // CCFSFolder / CControlPanelFolder / CRegFolder dispatch paths.
         ITEMIDLIST* idl = nullptr;
         if(SUCCEEDED(link->GetIDList(&idl)) && idl){
+            // Reachability for the CPL-load sink. The historic CControlPanelFolder LoadLibrary
+            // (CVE-2010-2568) fires on icon *extraction*, not on Resolve() — which we call with
+            // SLR_NO_UI, deliberately, to avoid UI/hangs on a headless box. Bind the PIDL to its
+            // parent folder and drive IExtractIconW::Extract so the SHITEMID dispatch walks into
+            // CPL_LoadCPLModule -> LoadLibraryW, the exact call the sink oracle watches. Without
+            // this the sink is never reached and GROUP_PIDL / GROUP_*FOLDER mutations can't trip it.
+            IShellFolder* parent = nullptr;
+            LPCITEMIDLIST child  = nullptr;
+            if(SUCCEEDED(SHBindToParent(idl, IID_IShellFolder, (void**)&parent, (PCUITEMID_CHILD*)&child)) && parent){
+                IExtractIconW* eiw = nullptr;
+                if(SUCCEEDED(parent->GetUIObjectOf(nullptr, 1, (PCUITEMID_CHILD_ARRAY)&child,
+                                                   IID_IExtractIconW, nullptr, (void**)&eiw)) && eiw){
+                    WCHAR icon_path[MAX_PATH] = {0};
+                    int   index = 0;
+                    UINT  flags = 0;
+                    if(SUCCEEDED(eiw->GetIconLocation(0, icon_path, MAX_PATH, &index, &flags))){
+                        // Extract is the call that ends in LoadLibraryW for a control-panel item.
+                        // system .cpl paths pass the oracle's allowlist; an attacker-controlled
+                        // module path trips it.
+                        HICON big = nullptr, small = nullptr;
+                        if(SUCCEEDED(eiw->Extract(icon_path, index, &big, &small, MAKELONG(32, 16)))){
+                            if(big)   DestroyIcon(big);
+                            if(small) DestroyIcon(small);
+                        }
+                    }
+                    eiw->Release();
+                }
+                parent->Release();
+            }
             CoTaskMemFree(idl);
         }
 
@@ -335,6 +370,13 @@ int main(int argc, char** argv){
         fprintf(stderr, "CoInitializeEx failed: 0x%08lx\n", hr);
         return 1;
     }
+
+    // Install the behavioral (sink) oracle before any sample runs. Hooks the code-execution sinks
+    // in the modules that carry shell32's LNK / namespace handlers, so an attacker-steered module
+    // load becomes a recorded crash. These are the same modules worth instrumenting with TinyInst
+    // (shell32 plus the property/storage helpers the propstore path forwards into).
+    static const wchar_t* kOracleModules[] = { L"shell32.dll", L"windows.storage.dll", L"propsys.dll" };
+    oracle_install(kOracleModules, sizeof(kOracleModules) / sizeof(kOracleModules[0]));
 
     // The persistent target. TinyInst rewrites the RET so each call loops
     // back to fuzz()'s entry; -iterations on the fuzzer command line
