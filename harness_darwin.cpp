@@ -46,6 +46,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "oracle.h"  // behavioral (sink) oracle, scoped to msi.dll here (see oracle.h)
+
 #pragma comment(lib, "msi.lib")
 
 extern "C" UINT WINAPI CommandLineFromMsiDescriptor(WCHAR* Descriptor, WCHAR* CommandLine, DWORD* CommandLineLength);
@@ -128,6 +130,8 @@ void fuzz(char* /*shm_name*/){
     if(sample_size == 0 || sample_size > MAX_SAMPLE_SIZE) return;
     const BYTE* sample_bytes = (const BYTE*)(g_shm_data + SHM_HEADER_SIZE);
 
+    oracle_set_sample(sample_bytes, sample_size);  // arm input-taint tagging for this iteration
+
     // Overwrite the temp .lnk with this iteration's payload.
     // CREATE_ALWAYS truncates+rewrites; FILE_ATTRIBUTE_TEMPORARY hints the cache manager to keep
     // pages in memory and avoid lazy writeback to disk.
@@ -193,6 +197,12 @@ int main(int argc, char** argv){
         fprintf(stderr, "CoInitializeEx failed: 0x%08lx\n", hr);
         return 1;
     }
+
+    // Behavioral oracle scoped to msi.dll: a Darwin descriptor that drives the advertised-shortcut
+    // path into spawning a non-system executable (CreateProcessW / ShellExecuteExW) is the
+    // code-exec signal here, mirroring the CPL-load sink on the shell32 side.
+    static const wchar_t* kOracleModules[] = { L"msi.dll" };
+    oracle_install(kOracleModules, sizeof(kOracleModules) / sizeof(kOracleModules[0]));
 
     fuzz(argv[2]);
 

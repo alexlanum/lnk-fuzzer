@@ -105,7 +105,7 @@ endif()
 # Pure Win32 + COM. No Jackalope link; it talks to the fuzzer over the SHM channel only.
 # ---------------------------------------------------------------------------------------------
 if(WIN32)
-    add_executable(harness harness.cpp)
+    add_executable(harness harness.cpp oracle.h)
     target_link_libraries(harness PRIVATE ole32 shell32 propsys oleaut32)
     # /GS, /sdl etc. are MSVC defaults at Release. We don't disable them — fuzzer perf is
     # gated by shell32 anyway, and turning them off would mask real CFG-detected corruption.
@@ -121,7 +121,7 @@ endif()
 # some Windows SDK msi.h headers; msi.lib still resolves it at link time.
 # ---------------------------------------------------------------------------------------------
 if(WIN32)
-    add_executable(harness_darwin harness_darwin.cpp)
+    add_executable(harness_darwin harness_darwin.cpp oracle.h)
     target_link_libraries(harness_darwin PRIVATE msi ole32 shell32)
     if(MSVC)
         target_compile_options(harness_darwin PRIVATE /Zi)
