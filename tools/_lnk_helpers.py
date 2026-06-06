@@ -164,6 +164,79 @@ def block_property_store_minimal():
     return struct.pack('<II', 8 + len(payload), 0xA0000009) + payload
 
 
+# FMTID {D5CDD505-2E9C-101B-9397-08002B2CF9AE} — storage whose values are String-Named
+# (user-defined props) rather than Integer-Named. deserialize.c keys name_scheme off this.
+FMTID_STRING_NAMED = uuid.UUID('D5CDD505-2E9C-101B-9397-08002B2CF9AE')
+
+# Two arbitrary non-string-named FMTIDs for multi-storage stores.
+FMTID_SUMMARY  = uuid.UUID('F29F85E0-4FF9-1068-AB91-08002B27B3D9')  # System.Title set
+FMTID_DOCMISC  = uuid.UUID('D5CDD502-2E9C-101B-9397-08002B2CF9AE')
+
+
+def _tpv_lpwstr(text='val'):
+    """TypedPropertyValue VT_LPWSTR: [vt:2][pad:2][cch:4][utf16 + null]."""
+    s = text.encode('utf-16-le') + b'\x00\x00'
+    return struct.pack('<HHI', 0x001F, 0x0000, len(s) // 2) + s
+
+
+def _value_integer(property_id, tpv):
+    """Integer-named value: [ValueSize:4][PropertyID:4][Reserved:1][TPV]. ValueSize covers itself on."""
+    return struct.pack('<IIB', 9 + len(tpv), property_id, 0) + tpv
+
+
+def _value_string(name, tpv):
+    """String-named value: [ValueSize:4][NameSize:4][Reserved:1][name utf16+null][TPV]."""
+    nm = name.encode('utf-16-le') + b'\x00\x00'
+    return struct.pack('<IIB', 9 + len(nm) + len(tpv), len(nm), 0) + nm + tpv
+
+
+def _storage(fmtid, values):
+    """One SerializedPropertyStorage: [StorageSize:4][Version:4][FMTID:16][values][term:4].
+    StorageSize is the skip distance to the next storage (includes itself + 4-byte value terminator)."""
+    body = b''.join(values)
+    storage_size = 4 + 4 + 16 + len(body) + 4
+    return (struct.pack('<I', storage_size) + struct.pack('<I', 0x53505331)
+            + guid_bytes(fmtid) + body + struct.pack('<I', 0))
+
+
+def block_property_store(*storages):
+    """PropertyStoreDataBlock — 0xA0000009 wrapping N storages + the store terminator."""
+    payload = b''.join(storages) + struct.pack('<I', 0)
+    return struct.pack('<II', 8 + len(payload), 0xA0000009) + payload
+
+
+def block_property_store_string_named():
+    """Single String-Named storage — exercises the PROPVAL_STRING_NAMED parse path no
+    collected seed reaches, and makes MUTATE_PROPSTORE_NAMING_MISMATCH realistic."""
+    return block_property_store(
+        _storage(FMTID_STRING_NAMED, [_value_string('My.Custom.Prop', _tpv_lpwstr('x'))]))
+
+
+def block_property_store_rich():
+    """Two Integer-Named storages, the first holding two values. Gives storage_count >= 2
+    (MUTATE_PROPSTORE_DUPLICATE_FORMAT_ID / EARLY_TERMINATOR) and a storage with >= 2 values
+    (MUTATE_PROPSTORE_DUPLICATE_PID) — preconditions only one collected seed satisfies."""
+    return block_property_store(
+        _storage(FMTID_SUMMARY, [_value_integer(2,  _tpv_lpwstr('title')),
+                                 _value_integer(3,  _tpv_lpwstr('subject'))]),
+        _storage(FMTID_DOCMISC, [_value_integer(11, _tpv_lpwstr('author'))]))
+
+
+def block_unknown_signature(sig=0xA00000FF):
+    """ExtraData block with a signature outside the spec table — deserialize classifies it
+    EXTRA_UNKNOWN and the serializer must round-trip the raw signature."""
+    payload = b'\xde\xad\xbe\xef' * 4
+    return struct.pack('<II', 8 + len(payload), sig) + payload
+
+
+# Network shell items. class_type 0x41/0x42/0x46 -> NETWORK_RESOURCE/SERVER/SHARE in
+# deserialize.c. Payload bytes are opaque to the model (kept raw), so a UNC-style name suffices;
+# these give MUTATE_PIDL_PARENT_CHILD_MISMATCH real network targets to mis-parent.
+def shitemid_network(class_type, name=r'\\SERVER\share'):
+    n = name.encode('utf-16-le') + b'\x00\x00'
+    return shitemid(class_type, b'\x00\x00' + n)
+
+
 def block_known_folder(folder_id=FOLDERID_Documents, offset=0x00000014):
     """KnownFolderDataBlock — 0xA000000B, 20-byte payload."""
     payload = guid_bytes(folder_id) + struct.pack('<I', offset)
@@ -275,6 +348,31 @@ def build_header(link_flags, file_attributes=0x00000020,
         + struct.pack('<IH', show_cmd, hot_key)
         + struct.pack('<HII', 0, 0, 0)  # Reserved1/2/3
     )
+
+
+def linkinfo_unc(net_name=r'\\FILESERVER\share', suffix='target.exe'):
+    """LinkInfo carrying a CommonNetworkRelativeLink (UNC target) instead of a VolumeID.
+
+    Header is the 0x1C (no-Unicode) form. Layout matches deserialize_linkinfo:
+      [Size][HdrSize=0x1C][Flags=0x02][VolIDOff=0][LocalBaseOff=0][CNRLOff=0x1C][SuffixOff]
+      <CNRL @0x1C> <CommonPathSuffix ANSI string>
+    CNRL flags=0 (no device, no net-type), NetNameOffset=0x14 so no Unicode CNRL fields.
+    This is the CVE-2015-0096 path-construction surface; only one collected seed reaches it.
+    """
+    nn = net_name.encode('ascii', errors='replace') + b'\x00'
+    cnrl_size = 0x14 + len(nn)
+    cnrl = (struct.pack('<IIIII', cnrl_size, 0, 0x14, 0, 0) + nn)  # size, flags, netoff, devoff, nettype
+
+    sfx = suffix.encode('ascii', errors='replace') + b'\x00'
+    cnrl_off = 0x1C
+    suffix_off = cnrl_off + len(cnrl)
+    total = suffix_off + len(sfx)
+
+    header = struct.pack('<IIIIIII',
+                         total, 0x1C, 0x02,  # Size, HeaderSize, Flags(CNRL+suffix)
+                         0, 0,               # VolumeIDOffset, LocalBasePathOffset (unused)
+                         cnrl_off, suffix_off)
+    return header + cnrl + sfx
 
 
 def build_string_data(value, is_unicode):

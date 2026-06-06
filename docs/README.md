@@ -9,6 +9,7 @@
 | [lnk-format.md](lnk-format.md)     | MS-SHLLINK section layout as the parser sees it (reference) |
 | [extra-data.md](extra-data.md)     | field-level deep dives on security-relevant ExtraData blocks (reference) |
 | [attack-surface.md](attack-surface.md) | the CVEs the operators and oracle target |
+| [seeds.md](seeds.md)               | corpus axes, the `classify.c` tool, gap analysis, generators |
 | [running.md](running.md)           | build, both campaigns, PageHeap, distributed, triage |
 
 Start at [architecture.md](architecture.md). The two docs that carry the design's depth are
