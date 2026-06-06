@@ -10,10 +10,15 @@ Productive mutation strategies are learned, not hand-weighted: the scheduler shi
 format regions and corruption styles that keep unlocking new code in the parser.
 
 ```
-seed .lnk ─▶ deserialize ─▶ typed model ─▶ scheduler picks+applies ─▶ serialize ─▶ shell32 / msi
-                                              one of ~85 operators        (rebuild         │  under
-                                              (Thompson Sampling)          magic/sigs/len) │  TinyInst
-            update Beta posteriors ◀── new coverage? ◀── coverage + oracles ◀──────────────┘
+> seed .lnk
+  > deserialize
+    > typed model
+      > scheduler picks + applies mutation ◀─┐  one of ~85 operators · Thompson Sampling
+        > serialize                           │  rebuild magic / sigs / len
+          > shell32 / msi                     │  under TinyInst
+            > coverage + oracles              │  crash / hang / sanitizer signals
+              > new coverage?                 │
+                > update Beta posteriors──────┘  reward → biases next operator pick
 ```
 
 ## Why parser-aware
