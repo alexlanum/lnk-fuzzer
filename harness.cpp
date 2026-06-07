@@ -244,10 +244,10 @@ void fuzz(char* /*shm_name*/){
                         // Extract is the call that ends in LoadLibraryW for a control-panel item.
                         // system .cpl paths pass the oracle's allowlist; an attacker-controlled
                         // module path trips it.
-                        HICON big = nullptr, small = nullptr;
-                        if(SUCCEEDED(eiw->Extract(icon_path, index, &big, &small, MAKELONG(32, 16)))){
+                        HICON big = nullptr, ico_small = nullptr;
+                        if(SUCCEEDED(eiw->Extract(icon_path, index, &big, &ico_small, MAKELONG(32, 16)))){
                             if(big)   DestroyIcon(big);
-                            if(small) DestroyIcon(small);
+                            if(ico_small) DestroyIcon(ico_small);
                         }
                     }
                     eiw->Release();
