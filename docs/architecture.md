@@ -7,17 +7,21 @@ handling from **Jackalope** (fuzzing engine) and **TinyInst** (dynamic binary in
 
 ![anatomy of the fuzzing loop](assets/fuzzer-anatomy.png)
 
-## Why parser-aware
+## parser-aware
 
-A `.lnk` is dense with structure a byte-level mutator wastes its budget fighting: the `0x4C` header
-magic, the 16-byte `LNK_CLSID`, ExtraData block signatures (`0xA00000xx`), the `0x53505331`
-property-store version, length and offset fields that must agree. Random bit-flips spend almost all
-their energy producing inputs the parser rejects in the first few hundred bytes.
+.lnk files follow the MS-SHLLINK format, which is highly stateful.
+A byte-level mutator would not satisfy thr many state-based conditions, such as:
+. `0x4C` header
+. 16-byte `LNK_CLSID`
+. ExtraData block signatures (`0xA00000xx`)
+. `0x53505331` property-store version
+. length and offset fields that must agree
+Random bit-flips would spend all of their energy producing inputs the parser rejects in the first few hundred bytes.
 
-This fuzzer parses the seed into a typed model, mutates *fields and structure* (offsets, sizes,
-flags, PIDL item types, ExtraData ordering, property-value VARTYPEs), then reserializes —
-recomputing the magic, signatures, and lengths so the result re-enters the parser deep instead of
-bouncing at the header. Which structural corruption to apply is chosen by a bandit that learns from
+This fuzzer parses the seed into a model, mutates *fields and structure* (offsets, sizes,
+flags, PIDL item types, ExtraData ordering, property-value VARTYPEs), then reserializes;
+recomputing the `0x4C` header, signatures, and lengths so the result re-enters the parser at a deep state
+instead of at the header. Which structural corruption to apply is chosen by a bandit that learns from
 coverage ([scheduler.md](scheduler.md)).
 
 ## Data flow
