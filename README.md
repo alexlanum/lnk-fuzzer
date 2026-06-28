@@ -3,7 +3,7 @@
 A parser-aware, coverage-guided fuzzer for the Windows Shell Link (`.lnk`) format, built on
 [Jackalope](https://github.com/googleprojectzero/Jackalope) + TinyInst and targeting the real
 `shell32.dll` / `msi.dll` parsers. It parses each seed into a typed model, applies one
-structure-aware mutation chosen by a **two-level Thompson Sampling bandit** over live coverage
+structure-aware mutation chosen by a two-level Thompson Sampling bandit* over live coverage
 feedback, reserializes, and runs it through the Shell Link COM surface under dynamic instrumentation.
 
 Productive mutation strategies are learned, not hand-weighted: the scheduler shifts budget toward the
