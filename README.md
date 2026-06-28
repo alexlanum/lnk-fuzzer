@@ -1,4 +1,4 @@
-# Lnk
+# .lnk file fuzzer
 
 A parser-aware, coverage-guided fuzzer for the Windows Shell Link (`.lnk`) format, built on
 [Jackalope](https://github.com/googleprojectzero/Jackalope) + TinyInst and targeting the real
